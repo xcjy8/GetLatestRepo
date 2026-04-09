@@ -1,0 +1,10 @@
+.DS_Store
+.history
+.claude/
+AGENTS.md
+CLAUDE.md
+debug/
+target/
+reports/
+docs/
+!reports/README.md

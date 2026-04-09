@@ -1,0 +1,94 @@
+use anyhow::Result;
+use askama::Template;
+
+use crate::git::format_duration;
+use crate::models::{Freshness, RepoSummary, Repository};
+use super::Reporter;
+
+#[derive(Template)]
+#[template(path = "report.html")]
+struct HtmlTemplate {
+    repos: Vec<RepositoryView>,
+    summary: RepoSummary,
+    generated_at: String,
+}
+
+/// HTML report repository view
+/// 
+/// Note: some fields are for HTML template use, Rust compiler cannot detect usage in template
+#[derive(Debug)]
+#[allow(dead_code)]
+struct RepositoryView {
+    name: String,
+    path: String,
+    branch: String,
+    status_class: String,
+    status_icon: String,
+    status_text: String,
+    behind_count: i32,
+    /// Currently not used in template, reserved for future extension
+    ahead_count: i32,
+    is_dirty: bool,
+    dirty_count: usize,
+    dirty_files: Vec<String>,
+    last_commit_message: String,
+    last_commit_author: String,
+    last_update: String,
+    /// Currently not used in template, reserved for future extension
+    upstream_url: Option<String>,
+}
+
+impl From<&Repository> for RepositoryView {
+    fn from(repo: &Repository) -> Self {
+        let (status_class, status_icon, status_text) = match repo.freshness {
+            Freshness::HasUpdates => ("status-behind", "🔴", "Need updates"),
+            Freshness::Synced => ("status-synced", "🟢", "Synced"),
+            Freshness::Unreachable => ("status-error", "⚫", "Unreachable"),
+            Freshness::NoRemote => ("status-none", "⚪", "No remote"),
+        };
+
+        Self {
+            name: repo.name.clone(),
+            path: repo.path.clone(),
+            branch: repo.branch.clone().unwrap_or_else(|| "-".to_string()),
+            status_class: status_class.to_string(),
+            status_icon: status_icon.to_string(),
+            status_text: status_text.to_string(),
+            behind_count: repo.behind_count,
+            ahead_count: repo.ahead_count,
+            is_dirty: repo.dirty,
+            dirty_count: repo.dirty_files.len(),
+            dirty_files: repo.dirty_files.clone(),
+            last_commit_message: repo.last_commit_message.clone()
+                .unwrap_or_else(|| "-".to_string()),
+            last_commit_author: repo.last_commit_author.clone()
+                .unwrap_or_else(|| "-".to_string()),
+            last_update: format_duration(&repo.last_commit_at),
+            upstream_url: repo.upstream_url.as_ref().map(|url| crate::utils::sanitize_url(url)),
+        }
+    }
+}
+
+pub struct HtmlReporter;
+
+impl HtmlReporter {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Reporter for HtmlReporter {
+    fn generate(&self, repos: &[Repository], summary: &RepoSummary) -> Result<String> {
+        let template = HtmlTemplate {
+            repos: repos.iter().map(RepositoryView::from).collect(),
+            summary: summary.clone(),
+            generated_at: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        };
+
+        Ok(template.render()?)
+    }
+
+    fn extension(&self) -> &'static str {
+        "html"
+    }
+}
