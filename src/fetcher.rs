@@ -153,7 +153,7 @@ impl Fetcher {
                 let original_path = repo.path.clone();
                 
                 if let Some(ref pb) = main_pb {
-                    pb.set_message(format!("{}", repo.name));
+                    pb.set_message(repo.name.to_string());
                 }
 
                 // 1. Security scan (only if the path exists)

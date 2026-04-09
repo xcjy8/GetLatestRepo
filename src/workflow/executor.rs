@@ -601,6 +601,7 @@ impl WorkflowExecutor {
     }
 
     /// Execute safe pull (clean repositories only)
+    #[allow(clippy::type_complexity)]
     async fn execute_pull_safe(
         &self,
         db: &Database,
@@ -1091,6 +1092,7 @@ impl WorkflowExecutor {
     }
 
     /// Execute force pull
+    #[allow(clippy::type_complexity)]
     async fn execute_pull_force(
         &self,
         db: &Database,

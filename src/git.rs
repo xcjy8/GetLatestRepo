@@ -323,6 +323,7 @@ impl GitOps {
     }
 
     /// Get last commit info
+    #[allow(clippy::type_complexity)]
     fn get_last_commit_info(repo: &GitRepository) -> Result<(Option<chrono::DateTime<chrono::Local>>, Option<String>, Option<String>)> {
         let head = match repo.head() {
             Ok(head) => head,
@@ -676,7 +677,7 @@ impl GitOps {
         let mut revwalk = repo.revwalk()?;
         revwalk.push_head()?;
         
-        for (_idx, oid) in revwalk.take(count).enumerate() {
+        for oid in revwalk.take(count) {
             let oid = oid?;
             let commit = repo.find_commit(oid)?;
             

@@ -343,10 +343,10 @@ pub fn list_workflows() {
 /// # Security note
 /// Use `Command` instead of `system()` to avoid shell injection risks.
 /// Path uses `--` argument to stop option parsing, preventing paths starting with `-` from being interpreted as options.
-pub fn open_report(path: &PathBuf) -> anyhow::Result<()> {
+pub fn open_report(path: &std::path::Path) -> anyhow::Result<()> {
     // Ensure path is absolute, avoid relative path resolution issues
     let canonical_path = path.canonicalize()
-        .unwrap_or_else(|_| path.clone());
+        .unwrap_or_else(|_| path.to_path_buf());
     let path_str = canonical_path.to_string_lossy();
 
     #[cfg(target_os = "macos")]
@@ -377,7 +377,7 @@ pub fn open_report(path: &PathBuf) -> anyhow::Result<()> {
 }
 
 /// Ensure reports directory exists and create latest symlink
-pub fn ensure_reports_dir(path: &PathBuf) -> anyhow::Result<()> {
+pub fn ensure_reports_dir(path: &std::path::Path) -> anyhow::Result<()> {
     let latest_link = PathBuf::from("reports/latest.html");
 
     if let Err(e) = std::fs::remove_file(&latest_link) {

@@ -44,7 +44,7 @@ impl Drop for ProcessLock {
 /// Acquire a process lock to prevent duplicate execution
 fn acquire_process_lock() -> Result<ProcessLock> {
     let lock_path = dirs::cache_dir()
-        .unwrap_or_else(|| std::env::temp_dir())
+        .unwrap_or_else(std::env::temp_dir)
         .join("getlatestrepo.lock");
     
     #[cfg(unix)]
