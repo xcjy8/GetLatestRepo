@@ -27,6 +27,22 @@
 
 ---
 
+## 📸 Screenshots
+
+<p align="center">
+  <img src="docs/images/01.jpg" alt="Terminal Table Report" width="80%">
+</p>
+
+<p align="center">
+  <img src="docs/images/02.jpg" alt="HTML Dark Theme Report" width="80%">
+</p>
+
+<p align="center">
+  <img src="docs/images/03.jpg" alt="Workflow Execution" width="80%">
+</p>
+
+---
+
 ## 🚀 Installation
 
 ### From Source

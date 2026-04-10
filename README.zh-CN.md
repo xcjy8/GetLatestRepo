@@ -27,6 +27,22 @@
 
 ---
 
+## 📸 截图
+
+<p align="center">
+  <img src="docs/images/01.jpg" alt="终端表格报告" width="80%">
+</p>
+
+<p align="center">
+  <img src="docs/images/02.jpg" alt="HTML 暗色主题报告" width="80%">
+</p>
+
+<p align="center">
+  <img src="docs/images/03.jpg" alt="工作流执行" width="80%">
+</p>
+
+---
+
 ## 🚀 安装
 
 ### 从源码编译

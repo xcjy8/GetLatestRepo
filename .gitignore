@@ -6,5 +6,7 @@ CLAUDE.md
 debug/
 target/
 reports/
-docs/
+docs/*
+!docs/images/
+!docs/images/**
 !reports/README.md
