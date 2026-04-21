@@ -733,6 +733,10 @@ impl WorkflowExecutor {
             }
 
             for repo in &clean_repos {
+                if crate::signal_handler::is_shutdown_requested() {
+                    anyhow::bail!("用户中断，停止 Pull 操作");
+                }
+
                 let path = std::path::PathBuf::from(&repo.path);
                 let repo = repo.clone();
                 let result = match tokio::task::spawn_blocking(move || {

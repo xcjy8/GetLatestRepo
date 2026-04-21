@@ -2,6 +2,37 @@
 
 ---
 
+## [0.1.3] - 2026-04-21
+
+> package.sh 新增打包脚本
+
+### Added
+
+
+**优雅关闭（Graceful Shutdown）三层策略**
+
+解决 1000 仓库场景下 Ctrl+C 无法停止的核心痛点：
+
+1. **密集检查点** — `fetcher.rs` 结果收集循环改用 `timeout(200ms)` 轮询，检测到 shutdown 立即 break；`fetch_and_rescan` repo 循环、`concurrent.rs` 线程创建循环、`workflow/executor.rs` Pull 安全检查循环均加入 `is_shutdown_requested()` 检查
+2. **main 末尾自动 exit** — 命令执行返回后若 shutdown 标志已设置，直接 `process::exit(0)`，不等 tokio runtime 等待后台 `spawn_blocking` 线程
+3. **10 秒兜底 + 双按 Ctrl+C** — `signal_handler.rs` 第一次 Ctrl+C 设标志并启动 10 秒定时器；第二次 Ctrl+C 或 10 秒超时均立即 `process::exit(130)`
+
+**启动自检（Startup Cleanup）**
+
+- `main.rs` 新增 `run_startup_cleanup()`：打开数据库后遍历所有记录
+  - 若记录路径不存在但 `needauth/` 下有同名仓库 → 自动修复路径
+  - 若路径不存在且 needauth 下也没有 → 删除孤儿记录
+  - 遍历所有 `scan_sources` 的 `needauth/` 目录，清理 `.getlatestrepo_swap` 残留临时目录
+- 自检仅在非 `init` 命令时执行，避免初始化前误操作
+
+### Changed
+
+- `signal_handler.rs`: 重写为三层关闭策略，原 `AtomicBool` 单标志升级为 `tokio::select!` 竞争模型
+- `fetcher.rs`: `fetch_all_detailed` 结果收集从裸 `futures.next().await` 改为 `timeout` 轮询
+- `concurrent.rs`: 线程创建循环增加 shutdown 检查，剩余任务直接发 `None`
+
+---
+
 ## [0.1.2] - 2026-04-21
 
 ### Fixed
@@ -9,10 +40,12 @@
 > 14 项缺陷修复（安全/并发/Git 状态/信号/阻塞 IO）
 
 **安全 (Critical):**
+
 - `fetcher`: `move_repo_to_needauth` / `move_repo_from_needauth` 新增 `expected_parent` 参数，拒绝绝对路径遍历攻击
 - `fetcher`: 回滚恢复失败不再静默忽略，返回 CRITICAL 错误并告知用户临时路径位置
 
 **并发/异步 (High):**
+
 - `fetcher`: 所有 `spawn_blocking`（scan/move/inspect/fetch）包裹 `timeout`，防止 Semaphore 泄漏导致软死锁
 - `fetcher`: 重试总时间限制为 `timeout_secs * 2`，避免指数退火导致超时失控
 - `fetcher`: `fetch_and_update` DB 循环移至 `spawn_blocking`，避免阻塞异步运行时
@@ -21,11 +54,13 @@
 - `concurrent`: 线程栈大小降至 1MB，减少被遗弃线程的内存泄漏
 
 **Git 状态 (High):**
+
 - `git`: `pull_ff_only` / `pull_force` 在 `set_target` 失败后自动回滚 `checkout_tree` 到原始提交，防止工作目录与 HEAD 不一致
 - `git`: `pull_force` pull 失败后若 stash 已创建，主动警告用户 stash 名称和恢复命令，避免孤儿 stash
 - `git`: `find_stash_index` / `get_conflict_files` 错误分支改为显式警告，不再静默吞掉错误
 
 **其他修复 (Medium):**
+
 - `models`/`scanner`/`config`/`db`/`sync`: `max_depth` 类型从 `i32` 改为 `usize`，消除负值 round-trip 导致深度限制失效的 bug
 - `signal_handler`/`workflow`/`fetcher`: 移除 `#[allow(dead_code)]`，`SHUTDOWN_REQUESTED` 在 workflow 步骤循环和 fetch future 生成循环中实际生效
 - `workflow/executor`: 两处 `let _ =`（`ensure_reports_dir`、`upsert_repository`）改为显式错误日志

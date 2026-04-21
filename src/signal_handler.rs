@@ -1,36 +1,49 @@
-//! Signal handler module
+//! 信号处理模块
 //!
-//! Provides graceful shutdown, ensuring when SIGINT (Ctrl+C) is received:
-//! - Complete current database transactions
-//! - Clean up temporary files
-//! - Release file locks
+//! 提供三层优雅关闭策略：
+//! 1. 在长循环中密集检查关闭标志（fetcher、executor、concurrent）
+//! 2. main 函数末尾若标志已设置，自动执行 `process::exit(0)`
+//! 3. 10 秒强制退出兜底 + 第二次 Ctrl+C 立即退出
+//!
+//! 保证：用户在对 1000 个仓库执行 fetch 时按 Ctrl+C 也不会卡住。
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
-/// Global shutdown flag
+/// 全局关闭标志
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-/// Initialize signal handling
+/// 初始化信号处理
 ///
-/// Listen for Ctrl+C (SIGINT), set shutdown flag
+/// 第一次 Ctrl+C → 设置关闭标志，启动 10 秒强制退出定时器
+/// 第二次 Ctrl+C → 立即 `process::exit(130)`
+/// 10 秒超时   → `process::exit(130)`
 pub fn init() {
     tokio::spawn(async {
-        match tokio::signal::ctrl_c().await {
-            Ok(()) => {
-                eprintln!("\n⚠️  Interrupt signal received, shutting down gracefully...");
-                SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
-                // Note: we do NOT call process::exit here.
-                // The shutdown flag will be checked by long-running loops (fetcher, executor, etc.)
-                // and main() will return naturally, ensuring ProcessLock Drop runs.
+        // 等待第一次 Ctrl+C
+        if tokio::signal::ctrl_c().await.is_err() {
+            return;
+        }
+
+        eprintln!("\n⚠️  收到中断信号，正在优雅关闭...");
+        eprintln!("    再次按 Ctrl+C 可立即强制退出");
+        SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
+
+        // 10 秒超时与第二次 Ctrl+C 竞争
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                eprintln!("\n⚠️  优雅关闭超时（10秒），强制退出");
             }
-            Err(e) => {
-                eprintln!("⚠️  Unable to listen for Ctrl+C: {}", e);
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("\n✗ 收到第二次中断信号，立即强制退出");
             }
         }
+
+        std::process::exit(130);
     });
 }
 
-/// Check if shutdown was requested
+/// 检查是否收到关闭请求
 pub fn is_shutdown_requested() -> bool {
     SHUTDOWN_REQUESTED.load(Ordering::Relaxed)
 }

@@ -142,7 +142,7 @@ impl Fetcher {
         let mut futures = FuturesUnordered::new();
 
         for repo in repos {
-            // Skip spawning new work if shutdown was requested
+            // 若收到关闭请求，跳过生成新任务
             if crate::signal_handler::is_shutdown_requested() {
                 break;
             }
@@ -440,39 +440,50 @@ impl Fetcher {
         let mut moved_repos: Vec<String> = Vec::new();
         let mut restored_repos: Vec<String> = Vec::new();
 
-        while let Some(join_result) = futures.next().await {
-            match join_result {
-                Ok((original_repo, current_repo, result_model, moved_name, restored)) => {
-                    let moved = moved_name.is_some();
-                    
-                    // Collect restored repository name before moving current_repo
-                    if restored {
-                        restored_repos.push(current_repo.name.clone());
+        while !futures.is_empty() {
+            match timeout(Duration::from_millis(200), futures.next()).await {
+                Ok(Some(join_result)) => {
+                    match join_result {
+                        Ok((original_repo, current_repo, result_model, moved_name, restored)) => {
+                            let moved = moved_name.is_some();
+
+                            // 在移动 current_repo 之前收集已恢复仓库的名称
+                            if restored {
+                                restored_repos.push(current_repo.name.clone());
+                            }
+
+                            let exec_result = FetchExecutionResult {
+                                original_repo,
+                                current_repo,
+                                success: result_model.success,
+                                error: result_model.error,
+                                duration_ms: result_model.duration_ms,
+                                moved_to_needauth: moved,
+                                retry_count: result_model.retry_count,
+                                restored_from_needauth: restored,
+                            };
+
+                            // 收集已移动的仓库
+                            if let Some(name) = moved_name {
+                                moved_repos.push(name);
+                            }
+
+                            results.push(exec_result);
+                        }
+                        Err(e) => eprintln!("  │   {} Task exception: {}", "⚠️".yellow(), e),
                     }
-
-                    let exec_result = FetchExecutionResult {
-                        original_repo,
-                        current_repo,
-                        success: result_model.success,
-                        error: result_model.error,
-                        duration_ms: result_model.duration_ms,
-                        moved_to_needauth: moved,
-                        retry_count: result_model.retry_count,
-                        restored_from_needauth: restored,
-                    };
-
-                    // Collect moved repositories
-                    if let Some(name) = moved_name {
-                        moved_repos.push(name);
-                    }
-
-                    results.push(exec_result);
                 }
-                Err(e) => eprintln!("  │   {} Task exception: {}", "⚠️".yellow(), e),
+                Ok(None) => break,
+                Err(_) => {
+                    if crate::signal_handler::is_shutdown_requested() {
+                        eprintln!("  ⚠️  收到中断信号，取消等待剩余任务");
+                        break;
+                    }
+                }
             }
         }
 
-        // After the progress bar completes, display move/restore info uniformly
+        // 进度条完成后，统一显示移动/恢复信息
         if let Some(pb) = main_pb {
             pb.finish_and_clear();
         }
@@ -927,11 +938,11 @@ impl Fetcher {
         Ok(summary)
     }
 
-    /// Rescan state after fetching
+    /// fetch 后重新扫描状态
     /// 
-    /// Correctly handles repository moves:
-    /// - If repository moved to needauth, rescan with new path
-    /// - Preserve metadata like fetch time
+    /// 正确处理仓库移动：
+    /// - 若仓库已移动到 needauth，使用新路径重新扫描
+    /// - 保留 fetch 时间等元数据
     pub async fn fetch_and_rescan(
         &self,
         repos: &[Repository],
@@ -943,24 +954,29 @@ impl Fetcher {
 
         let mut updated_repos = Vec::new();
         
-        // Build a mapping from original path to execution results for fast lookup
+        // 构建从原始路径到执行结果的映射，用于快速查找
         let result_map: std::collections::HashMap<String, &FetchExecutionResult> = exec_results
             .iter()
             .map(|r| (r.original_repo.path.clone(), r))
             .collect();
         
         for repo in repos {
-            // Find the corresponding execution results
+            if crate::signal_handler::is_shutdown_requested() {
+                eprintln!("  ⚠️  收到中断信号，跳过后续仓库扫描");
+                break;
+            }
+
+            // 查找对应的执行结果
             let exec_result = result_map.get(&repo.path);
             
-            // Rescan using the current path (which may be a new path)
+            // 使用当前路径（可能是新路径）重新扫描
             let path_to_scan = exec_result.map(|r| r.db_path()).unwrap_or(&repo.path);
             let root_path = exec_result.map(|r| &r.current_repo.root_path).unwrap_or(&repo.root_path);
             
-            // Check if path exists
+            // 检查路径是否存在
             if !std::path::Path::new(path_to_scan).exists() {
                 eprintln!("   {} Repository path does not exist, skip rescan: {}", "⚠️".yellow(), path_to_scan);
-                // If the path does not exist, delete the record from the database
+                // 若路径不存在，从数据库中删除该记录
                 if let Err(e) = db.delete_repository(path_to_scan) {
                     eprintln!("   {} Delete from database failed: {}", "⚠️".yellow(), e);
                 }
@@ -983,10 +999,10 @@ impl Fetcher {
             
             match inspect_result {
                 Ok(mut updated) => {
-                    // Preserve the original metadata
+                    // 保留原始元数据
                     updated.id = repo.id;
                     if let Some(exec_result) = exec_result {
-                        // If fetch succeeded, use the original fetch time; otherwise keep the database value
+                        // 若 fetch 成功，使用原始 fetch 时间；否则保留数据库中的值
                         if exec_result.success {
                             updated.last_fetch_at = Some(chrono::Local::now());
                         } else {
@@ -996,8 +1012,8 @@ impl Fetcher {
                         updated.last_fetch_at = repo.last_fetch_at;
                     }
                     
-                    // If restored from needauth, atomically move the DB record (delete old + insert new)
-                    // to avoid leaving an orphan record at the old needauth path
+                    // 若从 needauth 恢复，原子性地移动数据库记录（删除旧记录 + 插入新记录）
+                    // 避免在旧 needauth 路径留下孤儿记录
                     let db_result = if exec_result.map(|r| r.restored_from_needauth).unwrap_or(false) {
                         db.move_repository(&repo.path, &mut updated)
                     } else {
@@ -1009,7 +1025,7 @@ impl Fetcher {
                     updated_repos.push(updated);
                 }
                 Err(e) => {
-                    // If the scan fails (e.g., repository moved to an invalid path), log the error but keep the original info
+                    // 若扫描失败（例如仓库移动到了无效路径），记录错误但保留原始信息
                     eprintln!("Rescan failed '{}': {}", repo.name, e);
                     
                     // If the repository was moved or restored, try to use the current info

@@ -20,6 +20,8 @@ mod workflow;
 use anyhow::{Result, Context};
 use clap::Parser;
 use crate::cli::{Cli, Commands};
+use crate::config::AppConfig;
+use crate::db::Database;
 use crate::git::ProxyConfig;
 use std::fs::File;
 
@@ -132,6 +134,13 @@ async fn main() -> Result<std::process::ExitCode> {
     let cli = Cli::parse();
     let no_security_check = cli.no_security_check;
 
+    // 启动自检：修复路径不一致的记录，清理过期的临时文件
+    if !matches!(cli.command, Commands::Init { .. }) {
+        if let Err(e) = run_startup_cleanup() {
+            eprintln!("⚠️  启动自检失败: {}", e);
+        }
+    }
+
     // Build proxy config
     let proxy_config = build_proxy_config(cli.proxy, cli.proxy_url);
 
@@ -192,7 +201,77 @@ async fn main() -> Result<std::process::ExitCode> {
         }
     }?;
 
+    // 若收到关闭请求，立即退出，不等待 tokio runtime 清理后台线程
+    if signal_handler::is_shutdown_requested() {
+        eprintln!("⚠️  进程因中断信号提前退出");
+        std::process::exit(0);
+    }
+
     Ok(std::process::ExitCode::from(exit_code as u8))
+}
+
+/// 启动自检：修复路径已不存在的数据库记录，
+/// 并清理残留的 `.getlatestrepo_swap` 临时目录。
+fn run_startup_cleanup() -> Result<usize> {
+    let config = AppConfig::load()?;
+    if !config.is_initialized() {
+        return Ok(0);
+    }
+
+    let db = Database::open()?;
+    let repos = db.list_repositories()?;
+    let mut fixes = 0;
+
+    for repo in &repos {
+        if std::path::Path::new(&repo.path).exists() {
+            continue;
+        }
+
+        // 尝试在 needauth/ 目录下定位仓库
+        let needauth_root = std::path::Path::new(&repo.root_path).join(crate::utils::NEEDAUTH_DIR);
+        let needauth_path = needauth_root.join(&repo.name);
+
+        if needauth_path.exists() {
+            let mut updated = repo.clone();
+            updated.path = needauth_path.to_string_lossy().to_string();
+            updated.root_path = needauth_root.to_string_lossy().to_string();
+            db.upsert_repository(&mut updated)?;
+            fixes += 1;
+        } else {
+            db.delete_repository(&repo.path)?;
+            fixes += 1;
+        }
+    }
+
+    if fixes > 0 {
+        eprintln!("ℹ️  启动自检完成，修复 {} 条记录", fixes);
+    }
+
+    // 清理 needauth/ 下过期的 swap 临时目录
+    let mut swap_cleaned = 0;
+    for source in &config.scan_sources {
+        let needauth = std::path::Path::new(&source.root_path).join(crate::utils::NEEDAUTH_DIR);
+        if !needauth.exists() {
+            continue;
+        }
+        if let Ok(entries) = std::fs::read_dir(&needauth) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.contains(".getlatestrepo_swap") {
+                    if let Err(e) = std::fs::remove_dir_all(entry.path()) {
+                        eprintln!("⚠️  清理临时目录失败 '{}': {}", entry.path().display(), e);
+                    } else {
+                        swap_cleaned += 1;
+                    }
+                }
+            }
+        }
+    }
+    if swap_cleaned > 0 {
+        eprintln!("🧹 清理 {} 个残留临时目录", swap_cleaned);
+    }
+
+    Ok(fixes)
 }
 
 /// Build proxy configuration

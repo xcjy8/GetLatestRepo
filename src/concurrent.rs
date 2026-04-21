@@ -48,12 +48,19 @@ where
     let mut handles = Vec::new();
 
     for (index, task) in tasks.into_iter().enumerate() {
-        // Wait until slot is available (blocking, non busy-wait)
+        if crate::signal_handler::is_shutdown_requested() {
+            for remaining_index in index..total {
+                let _ = tx.send(TaskResult { index: remaining_index, result: None });
+            }
+            break;
+        }
+
+        // 等待直到有空位（阻塞式，非忙等）
         loop {
             let current = active_count.load(Ordering::Relaxed);
             let max = max_concurrent.load(Ordering::Relaxed);
             if current < max {
-                // Try to increment counter
+                // 尝试递增计数器
                 match active_count.compare_exchange_weak(
                     current,
                     current + 1,
