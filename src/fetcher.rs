@@ -172,7 +172,17 @@ impl Fetcher {
                         }, None);
                     }
                     
-                    match Self::scan_repository(path, &repo.name) {
+                    let path_buf = path.to_path_buf();
+                    let repo_name = repo.name.clone();
+                    let scan_result = match tokio::task::spawn_blocking(move || {
+                        Self::scan_repository(&path_buf, &repo_name)
+                    }).await {
+                        Ok(Ok(r)) => Ok(r),
+                        Ok(Err(e)) => Err(e),
+                        Err(_) => Err(anyhow::anyhow!("Security scan task panicked")),
+                    };
+                    
+                    match scan_result {
                         Ok((is_safe, report)) => {
                             if !is_safe {
                                 let error_msg = if auto_skip {
@@ -186,21 +196,22 @@ impl Fetcher {
                                         eprintln!("\n{}", report);
                                     }
                                     eprint!("Continue fetch '{}'? [y/N] ", repo.name);
-                                    use std::io::Write;
-                                    let _ = std::io::stdout().flush();
-                                    let mut input = String::new();
-                                    if std::io::stdin().read_line(&mut input).is_ok() {
-                                        if input.trim().eq_ignore_ascii_case("y") {
-                                            // User confirmed to continue
-                                        } else {
-                                            return (original_repo, repo, FetchResultModel {
-                                                repo_path: original_path,
-                                                success: false,
-                                                error: Some(error_msg),
-                                                duration_ms: start.elapsed().as_millis() as u64,
-                                            }, None);
+                                    
+                                    let confirmed: bool = tokio::task::spawn_blocking(|| {
+                                        use std::io::{IsTerminal, Write};
+                                        if !std::io::stdin().is_terminal() {
+                                            eprintln!("Warning: stdin is not a TTY, defaulting to 'no' for security confirmation");
+                                            return false;
                                         }
-                                    } else {
+                                        let _ = std::io::stdout().flush();
+                                        let mut input = String::new();
+                                        match std::io::stdin().read_line(&mut input) {
+                                            Ok(_) => input.trim().eq_ignore_ascii_case("y"),
+                                            Err(_) => false,
+                                        }
+                                    }).await.unwrap_or_default();
+                                    
+                                    if !confirmed {
                                         return (original_repo, repo, FetchResultModel {
                                             repo_path: original_path,
                                             success: false,
@@ -247,11 +258,19 @@ impl Fetcher {
 
                 // 3. Handle repositories that need to be moved to need-auth (delayed print for unified display)
                 let (current_repo, result, moved_repo_name) = if fetch_status.should_move_to_needauth() && move_to_needauth {
-                    let needauth_dir = std::path::PathBuf::from(&root_path).join("needauth");
+                    let needauth_dir = std::path::PathBuf::from(&root_path).join(crate::utils::NEEDAUTH_DIR);
                     let needauth_path = needauth_dir.join(&repo_name);
                     
-                    match Self::move_repo_to_needauth(&repo_path, &needauth_path, repo.upstream_url.as_deref()) {
-                        Ok(final_path) => {
+                    let repo_path_clone = repo_path.clone();
+                    let upstream_url_clone = repo.upstream_url.clone();
+                    let needauth_path_clone = needauth_path.clone();
+                    
+                    let move_result = tokio::task::spawn_blocking(move || {
+                        Self::move_repo_to_needauth(&repo_path_clone, &needauth_path_clone, upstream_url_clone.as_deref())
+                    }).await;
+                    
+                    match move_result {
+                        Ok(Ok(final_path)) => {
                             // Build the new repository path (possibly renamed)
                             let new_repo_path = final_path.to_string_lossy().to_string();
                             let new_root_path = needauth_dir.to_string_lossy().to_string();
@@ -272,13 +291,23 @@ impl Fetcher {
                             };
                             (new_repo, result, Some(name_for_result))
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             // Record error when move fails
                             let result = FetchResultModel {
                                 repo_path: original_path,
                                 success: false,
                                 error: Some(format!("{} (Move failed: {})", 
                                     fetch_status.error_message().unwrap_or_default(), e)),
+                                duration_ms: start.elapsed().as_millis() as u64,
+                            };
+                            (repo, result, None)
+                        }
+                        Err(_) => {
+                            let result = FetchResultModel {
+                                repo_path: original_path,
+                                success: false,
+                                error: Some(format!("{} (Move task panicked)", 
+                                    fetch_status.error_message().unwrap_or_default())),
                                 duration_ms: start.elapsed().as_millis() as u64,
                             };
                             (repo, result, None)
@@ -610,7 +639,7 @@ impl Fetcher {
             if exec_result.success {
                 summary.success += 1;
                 if let Err(e) = db.update_fetch_time(exec_result.db_path()) {
-                    eprintln!("Update fetch timefailed '{}': {}", crate::utils::sanitize_path(exec_result.db_path()), e);
+                    eprintln!("Update fetch time failed '{}': {}", crate::utils::sanitize_path(exec_result.db_path()), e);
                 }
             } else {
                 summary.failed += 1;
@@ -664,13 +693,23 @@ impl Fetcher {
             if !std::path::Path::new(path_to_scan).exists() {
                 eprintln!("   {} Repository path does not exist, skip rescan: {}", "⚠️".yellow(), path_to_scan);
                 // If the path does not exist, delete the record from the database
-                if let Err(e) = db.delete_repository(&repo.path) {
+                if let Err(e) = db.delete_repository(path_to_scan) {
                     eprintln!("   {} Delete from database failed: {}", "⚠️".yellow(), e);
                 }
                 continue;
             }
             
-            match GitOps::inspect(std::path::Path::new(path_to_scan), root_path) {
+            let path_buf = std::path::PathBuf::from(path_to_scan);
+            let root_path_str = root_path.to_string();
+            let inspect_result = match tokio::task::spawn_blocking(move || {
+                GitOps::inspect(&path_buf, &root_path_str)
+            }).await {
+                Ok(Ok(r)) => Ok(r),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err(crate::error::GetLatestRepoError::Other(anyhow::anyhow!("Inspect task panicked"))),
+            };
+            
+            match inspect_result {
                 Ok(mut updated) => {
                     // Preserve the original metadata
                     updated.id = repo.id;

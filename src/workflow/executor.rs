@@ -12,6 +12,75 @@ use crate::scanner::Scanner;
 
 use super::types::*;
 
+/// Unified view for printing repository change trees (used by both Repository and DirtyRepoInfo)
+trait RepoChangeView {
+    fn name(&self) -> &str;
+    fn path(&self) -> &str;
+    fn branch(&self) -> Option<&str>;
+    fn file_changes(&self) -> &[crate::models::FileChange];
+    fn change_summary(&self) -> String;
+}
+
+impl RepoChangeView for crate::models::Repository {
+    fn name(&self) -> &str { &self.name }
+    fn path(&self) -> &str { &self.path }
+    fn branch(&self) -> Option<&str> { self.branch.as_deref() }
+    fn file_changes(&self) -> &[crate::models::FileChange] { &self.file_changes }
+    fn change_summary(&self) -> String { self.change_summary() }
+}
+
+impl RepoChangeView for crate::workflow::types::DirtyRepoInfo {
+    fn name(&self) -> &str { &self.name }
+    fn path(&self) -> &str { &self.path }
+    fn branch(&self) -> Option<&str> { self.branch.as_deref() }
+    fn file_changes(&self) -> &[crate::models::FileChange] { &self.file_changes }
+    fn change_summary(&self) -> String { self.change_summary() }
+}
+
+/// Print a single repository's change tree (shared between execute() and execute_pull_safe())
+fn print_repo_change_tree(repo: &impl RepoChangeView, is_last: bool, base_indent: usize) {
+    let pad = " ".repeat(base_indent);
+    let repo_connector = if is_last { "└─" } else { "├─" };
+    println!("{}{} 📦 {}", pad, repo_connector, repo.name().bold());
+
+    let meta = if is_last { "      " } else { "   │  " };
+    println!("{}📁 {}", meta, repo.path().dimmed());
+
+    let branch_info = repo.branch().unwrap_or("unknown");
+    println!("{}🌿 Branch: {} | Status: {}", meta, branch_info.cyan(), repo.change_summary().yellow());
+
+    if !repo.file_changes().is_empty() {
+        println!("{}📝 Changed files ({}):", meta, repo.file_changes().len());
+
+        for (j, change) in repo.file_changes().iter().enumerate() {
+            let is_last_file = j == repo.file_changes().len() - 1;
+            let file_pad = if is_last { "       " } else { "   │   " };
+            let file_tree = if is_last_file { "└─" } else { "├─" };
+
+            let status_icon = match change.status.as_str() {
+                "added" => "✚",
+                "deleted" => "✗",
+                "modified" => "✎",
+                "renamed" => "➜",
+                _ => "?",
+            };
+
+            println!("{}{} {} {} {}",
+                file_pad, file_tree, status_icon, change.path,
+                if change.staged { "(staged)".green() } else { "(unstaged)".dimmed() }
+            );
+
+            let detail = if is_last_file { "         " } else { "   │     " };
+            println!("{}Impact: {}", detail, change.impact.dimmed());
+            println!("{}If pull-force is executed: {}", detail, change.stash_effect.dimmed());
+
+            if !is_last_file {
+                println!("{}", file_pad);
+            }
+        }
+    }
+}
+
 /// Workflow executor
 pub struct WorkflowExecutor {
     workflow: Workflow,
@@ -264,86 +333,29 @@ impl WorkflowExecutor {
                                         "▶".blue(), success_str, skip_str, failed_str
                                     );
 
+                                    // 展示成功拉取的仓库列表及最新提交时间
+                                    if !pull_result.success_repos.is_empty() {
+                                        println!("     {} 成功拉取的仓库：", "✓".green());
+                                        for (i, (name, time)) in pull_result.success_repos.iter().enumerate() {
+                                            let is_last = i == pull_result.success_repos.len() - 1;
+                                            let corner = if is_last { "└─" } else { "├─" };
+                                            let time_str = time.as_deref().unwrap_or("(无时间信息)");
+                                            println!("        {} {} {}",
+                                                corner,
+                                                name.green(),
+                                                format!("- {}", time_str).dimmed()
+                                            );
+                                        }
+                                        println!(); // 空行分隔
+                                    }
+
                                     if !pull_result.dirty_repos.is_empty() {
                                         println!("     {} Repositories with local changes (manual handling needed):", "⚠️".yellow());
                                         println!();
                                         
                                         for (i, repo_info) in pull_result.dirty_repos.iter().enumerate() {
                                             let is_last = i == pull_result.dirty_repos.len() - 1;
-                                            let repo_connector = if is_last { "└─" } else { "├─" };
-                                            
-                                            // Level 1: repository info
-                                            println!("        {} 📦 {}", 
-                                                repo_connector,
-                                                repo_info.name.bold()
-                                            );
-                                            
-                                            // Level 2: repository metadata
-                                            let meta_connector = if is_last { "      " } else { "   │  " };
-                                            println!("{} {} {}", 
-                                                meta_connector,
-                                                "📁".dimmed(),
-                                                repo_info.path.dimmed()
-                                            );
-                                            
-                                            let branch_info = repo_info.branch.as_deref().unwrap_or("unknown");
-                                            println!("{} {} Branch: {} | Status: {}", 
-                                                meta_connector,
-                                                "🌿".dimmed(),
-                                                branch_info.cyan(),
-                                                repo_info.change_summary().yellow()
-                                            );
-                                            
-                                            // Level 3: changed file list
-                                            if !repo_info.file_changes.is_empty() {
-                                                println!("{} {} Changed files ({}):", 
-                                                    meta_connector,
-                                                    "📝".dimmed(),
-                                                    repo_info.file_changes.len()
-                                                );
-                                                
-                                                for (j, change) in repo_info.file_changes.iter().enumerate() {
-                                                    let is_last_file = j == repo_info.file_changes.len() - 1;
-                                                    let file_connector = if is_last { "       " } else { "   │   " };
-                                                    let file_tree = if is_last_file { "└─" } else { "├─" };
-                                                    
-                                                    // Status icon and color
-                                                    let (status_icon, _status_color) = match change.status.as_str() {
-                                                        "added" => ("✚", "green"),
-                                                        "deleted" => ("✗", "red"),
-                                                        "modified" => ("✎", "yellow"),
-                                                        "renamed" => ("➜", "blue"),
-                                                        _ => ("?", "white"),
-                                                    };
-                                                    
-                                                    // Show file changes
-                                                    println!("{}{} {} {} {}", 
-                                                        file_connector,
-                                                        file_tree,
-                                                        status_icon,
-                                                        change.path,
-                                                        if change.staged { "(staged)".green() } else { "(unstaged)".dimmed() }
-                                                    );
-                                                    
-                                                    // Impact and stash effect
-                                                    let detail_connector = if is_last_file { "         " } else { "   │     " };
-                                                    println!("{}{} Impact: {}", 
-                                                        file_connector,
-                                                        detail_connector,
-                                                        change.impact.dimmed()
-                                                    );
-                                                    println!("{}{} If pull-force is executed: {}", 
-                                                        file_connector,
-                                                        detail_connector,
-                                                        change.stash_effect.dimmed()
-                                                    );
-                                                    
-                                                    if !is_last_file {
-                                                        println!("{}", file_connector);
-                                                    }
-                                                }
-                                            }
-                                            
+                                            print_repo_change_tree(repo_info, is_last, 8);
                                             if !is_last {
                                                 println!();
                                             }
@@ -401,10 +413,12 @@ impl WorkflowExecutor {
                                 );
 
                                 if !pull_result.conflict_repos.is_empty() {
-                                    println!("   {} repositories have pop stash conflicts:",
+                                    println!("   {} 个仓库 stash pop 冲突，需手动恢复：",
                                         pull_result.conflict_repos.len().to_string().yellow());
-                                    for repo in &pull_result.conflict_repos {
-                                        println!("     - {} (stash saved at stash@{{0}})", repo);
+                                    for (name, path, stash_name) in &pull_result.conflict_repos {
+                                        println!("     - {} (stash 消息: {})", name, stash_name);
+                                        println!("       查找: git -C {} stash list | grep '{}'", path, stash_name);
+                                        println!("       恢复: git -C {} stash pop stash@{{index}}", path);
                                     }
                                 }
                                 if pull_result.failed_count > 0 {
@@ -655,80 +669,7 @@ impl WorkflowExecutor {
                 // Show tree hierarchy
                 for (i, repo_info) in dirty_repos.iter().enumerate() {
                     let is_last = i == dirty_repos.len() - 1;
-                    let repo_connector = if is_last { "└─" } else { "├─" };
-                    
-                    // Level 1: repository info
-                    println!("   {} 📦 {}", 
-                        repo_connector,
-                        repo_info.name.bold()
-                    );
-                    
-                    // Level 2: repository metadata
-                    let meta_connector = if is_last { "      " } else { "   │  " };
-                    println!("{} {} {}", 
-                        meta_connector,
-                        "📁".dimmed(),
-                        repo_info.path.dimmed()
-                    );
-                    
-                    let branch_info = repo_info.branch.as_deref().unwrap_or("unknown");
-                    println!("{} {} Branch: {} | Status: {}", 
-                        meta_connector,
-                        "🌿".dimmed(),
-                        branch_info.cyan(),
-                        repo_info.change_summary().yellow()
-                    );
-                    
-                    // Level 3: changed file list
-                    if !repo_info.file_changes.is_empty() {
-                        println!("{} {} Changed files ({}):", 
-                            meta_connector,
-                            "📝".dimmed(),
-                            repo_info.file_changes.len()
-                        );
-                        
-                        for (j, change) in repo_info.file_changes.iter().enumerate() {
-                            let is_last_file = j == repo_info.file_changes.len() - 1;
-                            let file_connector = if is_last { "       " } else { "   │   " };
-                            let file_tree = if is_last_file { "└─" } else { "├─" };
-                            
-                            // Status icon
-                            let status_icon = match change.status.as_str() {
-                                "added" => ("✚", "green"),
-                                "deleted" => ("✗", "red"),
-                                "modified" => ("✎", "yellow"),
-                                "renamed" => ("➜", "blue"),
-                                _ => ("?", "white"),
-                            };
-                            
-                            // Show file changes
-                            println!("{}{} {} {} {}", 
-                                file_connector,
-                                file_tree,
-                                status_icon.0,
-                                change.path,
-                                if change.staged { "(staged)".green() } else { "(unstaged)".dimmed() }
-                            );
-                            
-                            // Impact and stash effect
-                            let detail_connector = if is_last_file { "         " } else { "   │     " };
-                            println!("{}{} Impact: {}", 
-                                file_connector,
-                                detail_connector,
-                                change.impact.dimmed()
-                            );
-                            println!("{}{} If pull-force is executed: {}", 
-                                file_connector,
-                                detail_connector,
-                                change.stash_effect.dimmed()
-                            );
-                            
-                            if !is_last_file {
-                                println!("{}", file_connector);
-                            }
-                        }
-                    }
-                    
+                    print_repo_change_tree(repo_info, is_last, 3);
                     if !is_last {
                         println!();
                     }
@@ -762,14 +703,22 @@ impl WorkflowExecutor {
 
             for repo in &clean_repos {
                 let path = std::path::PathBuf::from(&repo.path);
-                match crate::git::GitOps::check_pull_safety(&path) {
+                let repo = repo.clone();
+                let result = match tokio::task::spawn_blocking(move || {
+                    crate::git::GitOps::check_pull_safety(&path)
+                }).await {
+                    Ok(Ok(report)) => Ok(report),
+                    Ok(Err(e)) => Err(e),
+                    Err(_) => Err(crate::error::GetLatestRepoError::Other(anyhow::anyhow!("Safety check task panicked"))),
+                };
+                match result {
                     Ok(report) => {
                         if !report.is_safe {
-                            unsafe_repos.push((repo.clone(), report));
+                            unsafe_repos.push((repo, report));
                         }
                     }
                     Err(e) => {
-                        unsafe_repos.push((repo.clone(), crate::git::PullSafetyReport {
+                        unsafe_repos.push((repo, crate::git::PullSafetyReport {
                             is_safe: false,
                             remote_commits: 0,
                             previous_remote_commits: 0,
@@ -980,6 +929,11 @@ impl WorkflowExecutor {
                     }
                 }
             }
+            use std::io::IsTerminal;
+            if !std::io::stdin().is_terminal() {
+                anyhow::bail!("stdin is not a TTY, use --yes to skip confirmation");
+            }
+
             print!("\nConfirm execution? [Y/n] ");
             use std::io::Write;
             std::io::stdout().flush()?;
@@ -1041,7 +995,8 @@ impl WorkflowExecutor {
                     }
                     success_paths.push((name.clone(), path.clone()));
                     
-                    // Refresh the repository status
+                    // Refresh the repository status and collect latest commit time
+                    let mut latest_time = None;
                     if let Ok(Some(old_repo)) = db.get_repository(&path) {
                         let path_buf = std::path::PathBuf::from(&path);
                         let root_path = old_repo.root_path.clone();
@@ -1051,11 +1006,14 @@ impl WorkflowExecutor {
                             fresh.id = old_repo.id;
                             fresh.last_fetch_at = old_repo.last_fetch_at;
                             fresh.last_pull_at = Some(chrono::Local::now());
+                            latest_time = fresh.last_commit_at;
                             if let Err(e) = db.upsert_repository(&mut fresh) {
                                 eprintln!("   ⚠️ Update repository status failed '{}': {}", crate::utils::sanitize_path(&path), e);
                             }
                         }
                     }
+                    let time_str = latest_time.map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string());
+                    pull_result.success_repos.push((name, time_str));
                 }
                 Some((name, _, Err(e))) => {
                     pull_result.failed_count += 1;
@@ -1161,7 +1119,7 @@ impl WorkflowExecutor {
                     if let Err(e) = db.update_pull_time(&path) {
                         eprintln!("   ⚠️ Update pull time failed '{}': {}", crate::utils::sanitize_path(&path), e);
                     }
-                    pull_result.conflict_repos.push(format!("{} (stash: {})", name, stash_name));
+                    pull_result.conflict_repos.push((name.clone(), path.clone(), stash_name));
                     success_paths.push((name, path));
                 }
                 Some((name, _, Err(e))) => {

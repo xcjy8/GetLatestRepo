@@ -5,6 +5,37 @@ use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+/// Pre-compiled sensitive file patterns (global cache)
+static SENSITIVE_PATTERNS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+    [
+        ".gitignore", ".gitmodules", "Cargo.toml", "package.json",
+        "requirements.txt", "setup.py", "Makefile", "Dockerfile",
+        ".github/workflows", ".gitlab-ci.yml", "build.gradle", "pom.xml", "go.mod",
+        // Added: credential and key files
+        ".env", ".env.local", ".env.production", ".env.development",
+        "*.pem", "*.key", "id_rsa", "id_rsa.pub", "id_ed25519", "id_ed25519.pub",
+        ".aws/credentials", ".docker/config.json", "kubeconfig", "*.p12", "*.pfx",
+        // Added: CI config files (high risk for supply chain attacks)
+        "Jenkinsfile", ".circleci/config.yml", ".travis.yml", "azure-pipelines.yml",
+    ]
+    .iter()
+    .cloned()
+    .collect()
+});
+
+/// Pre-compiled code file extensions (global cache)
+static CODE_EXTENSIONS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+    [
+        "rs", "py", "js", "ts", "java", "go", "c", "cpp", "h", "hpp",
+        "rb", "php", "sh", "bash", "zsh", "fish", "ps1", "bat", "cmd",
+        "pl", "pm", "t", "swift", "kt", "scala", "groovy", "gradle",
+        "xml", "json", "yaml", "yml", "toml", "ini", "cfg", "conf",
+    ]
+    .iter()
+    .cloned()
+    .collect()
+});
+
 /// Pre-compiled suspicious code patterns (global cache, avoid repeated compilation)
 static SUSPICIOUS_PATTERNS: Lazy<Vec<(regex::Regex, &'static str)>> = Lazy::new(|| {
     let raw: &[(&str, &str)] = &[
@@ -253,24 +284,6 @@ impl SecurityScanner {
 
     /// Check sensitive file changes
     fn check_sensitive_files(repo: &Repository, local: Oid, remote: Oid) -> Result<SecurityRisk> {
-        let sensitive_patterns: HashSet<&str> = [
-            ".gitignore",
-            ".gitmodules",
-            "Cargo.toml",
-            "package.json",
-            "requirements.txt",
-            "setup.py",
-            "Makefile",
-            "Dockerfile",
-            ".github/workflows",
-            ".gitlab-ci.yml",
-            "build.gradle",
-            "pom.xml",
-            "go.mod",
-        ]
-        .iter()
-        .cloned()
-        .collect();
 
         let local_tree = repo.find_commit(local)?.tree()?;
         let remote_tree = repo.find_commit(remote)?.tree()?;
@@ -283,7 +296,7 @@ impl SecurityScanner {
         for delta in diff.deltas() {
             if let Some(path) = delta.new_file().path() {
                 let path_str = path.to_string_lossy();
-                for pattern in &sensitive_patterns {
+                for pattern in SENSITIVE_PATTERNS.iter() {
                     if path_str.contains(pattern) {
                         modified_sensitive_files.push(path_str.to_string());
                         break;
@@ -293,10 +306,19 @@ impl SecurityScanner {
         }
 
         if !modified_sensitive_files.is_empty() {
-            // Check if .gitignore was modified (high risk)
+            // Check if credential files or CI configs were modified (critical/high risk)
+            let credential_modified = modified_sensitive_files.iter().any(|p| {
+                p.contains(".env") || p.ends_with(".pem") || p.ends_with(".key") ||
+                p.contains("id_rsa") || p.contains("kubeconfig") || p.contains("credentials")
+            });
+            let ci_modified = modified_sensitive_files.iter().any(|p| {
+                p.contains("workflows") || p.contains("Jenkinsfile") || p.contains(".gitlab-ci")
+            });
             let gitignore_modified = modified_sensitive_files.iter().any(|p| p.contains(".gitignore"));
             
-            let level = if gitignore_modified {
+            let level = if credential_modified {
+                RiskLevel::Critical
+            } else if ci_modified || gitignore_modified {
                 RiskLevel::High
             } else {
                 RiskLevel::Medium
@@ -385,26 +407,16 @@ impl SecurityScanner {
 
     /// Check if it is a code file
     fn is_code_file(path: &str) -> bool {
-        let code_extensions: HashSet<&str> = [
-            "rs", "py", "js", "ts", "java", "go", "c", "cpp", "h", "hpp",
-            "rb", "php", "sh", "bash", "zsh", "fish", "ps1", "bat", "cmd",
-            "pl", "pm", "t", "swift", "kt", "scala", "groovy", "gradle",
-            "xml", "json", "yaml", "yml", "toml", "ini", "cfg", "conf",
-        ]
-        .iter()
-        .cloned()
-        .collect();
-
         if let Some(ext) = Path::new(path).extension() {
             if let Some(ext_str) = ext.to_str() {
-                return code_extensions.contains(ext_str.to_lowercase().as_str());
+                return CODE_EXTENSIONS.iter().any(|&e| e.eq_ignore_ascii_case(ext_str));
             }
         }
         false
     }
 
-    /// Max file size (1MB), skip security scan if exceeded
-    const MAX_FILE_SIZE: usize = 1024 * 1024;
+    /// Max file size, skip security scan if exceeded
+    const MAX_FILE_SIZE: usize = crate::utils::SECURITY_MAX_FILE_SIZE;
 
     /// Get file content (with size limit)
     fn get_file_content(repo: &Repository, id: Oid) -> Result<String> {
@@ -434,27 +446,28 @@ impl SecurityScanner {
         // Get known committer list (from local history)
         let known_committers = Self::get_known_committers(repo)?;
 
-        for oid in walk.take(20) {
+        for oid in walk.take(100) {
             let oid = oid?;
             if let Ok(commit) = repo.find_commit(oid) {
-                if let Some(name) = commit.committer().name() {
-                    let name_str = name.to_string();
-                    *new_committers.entry(name_str.clone()).or_insert(0) += 1;
-                    
-                    // Check if it's a new committer
-                    if !known_committers.contains(&name_str) {
-                        let commit_id = commit.id().to_string();
-                        let short_id = if commit_id.len() >= 7 {
-                            &commit_id[..7]
-                        } else {
-                            &commit_id
-                        };
-                        unknown_committers.push(format!(
-                            "{} (commit: {})",
-                            name_str,
-                            short_id
-                        ));
-                    }
+                let committer = commit.committer();
+                let name = committer.name().unwrap_or("unknown").to_string();
+                let email = committer.email().unwrap_or("unknown").to_string();
+                let identity = format!("{} <{}>", name, email);
+                *new_committers.entry(identity.clone()).or_insert(0) += 1;
+                
+                // Check if it's a new committer (match by name+email combination)
+                if !known_committers.contains(&identity) {
+                    let commit_id = commit.id().to_string();
+                    let short_id = if commit_id.len() >= 7 {
+                        &commit_id[..7]
+                    } else {
+                        &commit_id
+                    };
+                    unknown_committers.push(format!(
+                        "{} (commit: {})",
+                        identity,
+                        short_id
+                    ));
                 }
             }
         }
@@ -487,12 +500,13 @@ impl SecurityScanner {
             }
         }
 
-        for oid in walk.take(100) {
+        for oid in walk.take(200) {
             let oid = oid?;
             if let Ok(commit) = repo.find_commit(oid) {
-                if let Some(name) = commit.committer().name() {
-                    committers.insert(name.to_string());
-                }
+                let committer = commit.committer();
+                let name = committer.name().unwrap_or("unknown").to_string();
+                let email = committer.email().unwrap_or("unknown").to_string();
+                committers.insert(format!("{} <{}>", name, email));
             }
         }
 

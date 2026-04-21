@@ -20,11 +20,11 @@ pub async fn execute(
     no_security_check: bool,
     no_pull_guard: bool,
     proxy_config: Option<ProxyConfig>,
-) -> Result<()> {
+) -> Result<i32> {
     // List workflows
     if list {
         list_workflows();
-        return Ok(());
+        return Ok(0);
     }
 
     // Must have name
@@ -33,7 +33,7 @@ pub async fn execute(
         None => {
             eprintln!("{} Please specify workflow name", "✗".red());
             eprintln!("\nRun `getlatestrepo workflow --list` to see available workflows");
-            std::process::exit(1);
+            anyhow::bail!("Workflow name is required");
         }
     };
 
@@ -43,7 +43,7 @@ pub async fn execute(
         None => {
             eprintln!("{} Unknown workflow: {}", "✗".red(), name);
             eprintln!("\nRun `getlatestrepo workflow --list` to see available workflows");
-            std::process::exit(1);
+            anyhow::bail!("Unknown workflow: {}", name);
         }
     };
 
@@ -82,5 +82,5 @@ pub async fn execute(
     let result = executor.execute().await?;
 
     // Return appropriate exit code
-    std::process::exit(result.exit_code());
+    Ok(result.exit_code())
 }

@@ -33,6 +33,11 @@ pub async fn execute(path: PathBuf) -> Result<()> {
     print_success(&format!("Added scan source: {}", canonical.display()));
     print_info(&format!("Config file: {}", AppConfig::config_path()?.display()));
     print_info(&format!("Database: {}", Database::db_path()?.display()));
+    println!();
+    println!("{} 下一步操作：", "▶".cyan());
+    println!("   1. 运行 `getlatestrepo scan` 扫描仓库");
+    println!("   2. 运行 `getlatestrepo fetch` 检查远程更新");
+    println!("   3. 运行 `getlatestrepo workflow daily` 自动执行每日检查");
 
     Ok(())
 }

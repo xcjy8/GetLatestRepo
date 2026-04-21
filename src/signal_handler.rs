@@ -19,9 +19,9 @@ pub fn init() {
             Ok(()) => {
                 eprintln!("\n⚠️  Interrupt signal received, shutting down gracefully...");
                 SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
-                // Give some time for current operations to complete
-                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                std::process::exit(130);
+                // Note: we do NOT call process::exit here.
+                // The shutdown flag will be checked by long-running loops (fetcher, executor, etc.)
+                // and main() will return naturally, ensuring ProcessLock Drop runs.
             }
             Err(e) => {
                 eprintln!("⚠️  Unable to listen for Ctrl+C: {}", e);

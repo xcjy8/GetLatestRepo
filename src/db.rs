@@ -24,11 +24,20 @@ impl Database {
             .with_context(|| format!("Failed to open database: {}", path.display()))?;
 
         // Enable WAL mode for better concurrency performance
-        // PRAGMA journal_mode returns current mode, need to handle result
         let _journal_mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
         // Set busy timeout to avoid "database is locked" errors
-        // PRAGMA busy_timeout returns the previous timeout value
         let _old_timeout: i32 = conn.query_row("PRAGMA busy_timeout = 5000", [], |row| row.get(0))?;
+        // WAL mode optimization: synchronous = NORMAL for better performance
+        conn.execute("PRAGMA synchronous = NORMAL", [])?;
+
+        #[cfg(unix)]
+        {
+            use std::fs;
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(e) = fs::set_permissions(&path, fs::Permissions::from_mode(0o600)) {
+                eprintln!("Warning: failed to set database file permissions: {}", e);
+            }
+        }
 
         let db = Self { conn };
         db.init_tables()?;
@@ -36,8 +45,12 @@ impl Database {
         Ok(db)
     }
 
-    /// Initialize table schema
+    const SCHEMA_VERSION: i32 = 1;
+
+    /// Initialize table schema and run migrations
     fn init_tables(&self) -> Result<()> {
+        let version: i32 = self.conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        
         // Scan sources table
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS scan_sources (
@@ -97,6 +110,21 @@ impl Database {
         )?;
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_repo_updated ON repositories(updated_at)",
+            [],
+        )?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_repo_root_freshness ON repositories(root_path, freshness)",
+            [],
+        )?;
+
+        // Run migrations if needed
+        if version < Self::SCHEMA_VERSION {
+            // Future schema migrations go here
+            // e.g. ALTER TABLE ADD COLUMN ...
+        }
+
+        self.conn.execute(
+            &format!("PRAGMA user_version = {}", Self::SCHEMA_VERSION),
             [],
         )?;
 
@@ -201,56 +229,50 @@ impl Database {
 
     // ==================== Repositories ====================
 
+    const UPSERT_REPO_SQL: &str = "INSERT INTO repositories
+        (path, root_path, name, depth, branch, dirty, dirty_files,
+         upstream_ref, upstream_url, ahead_count, behind_count, freshness,
+         last_commit_at, last_commit_message, last_commit_author,
+         last_scanned_at, last_fetch_at, last_pull_at)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+    ON CONFLICT(path) DO UPDATE SET
+        root_path = excluded.root_path,
+        name = excluded.name,
+        depth = excluded.depth,
+        branch = excluded.branch,
+        dirty = excluded.dirty,
+        dirty_files = excluded.dirty_files,
+        upstream_ref = excluded.upstream_ref,
+        upstream_url = excluded.upstream_url,
+        ahead_count = excluded.ahead_count,
+        behind_count = excluded.behind_count,
+        freshness = excluded.freshness,
+        last_commit_at = excluded.last_commit_at,
+        last_commit_message = excluded.last_commit_message,
+        last_commit_author = excluded.last_commit_author,
+        last_scanned_at = excluded.last_scanned_at,
+        last_fetch_at = excluded.last_fetch_at,
+        last_pull_at = excluded.last_pull_at,
+        updated_at = CURRENT_TIMESTAMP";
+
+    fn build_repo_params(repo: &Repository) -> (String, &str) {
+        let dirty_files = serde_json::to_string(&repo.dirty_files).unwrap_or_else(|_| "[]".to_string());
+        let freshness_str = repo.freshness.as_str();
+        (dirty_files, freshness_str)
+    }
+
     /// Insert or update repository
     pub fn upsert_repository(&self, repo: &mut Repository) -> Result<()> {
-        let dirty_files = repo.dirty_files.join("\n");
-        let freshness_str = repo.freshness.as_str();
+        let (dirty_files, freshness_str) = Self::build_repo_params(repo);
 
         self.conn.execute(
-            "INSERT INTO repositories
-                (path, root_path, name, depth, branch, dirty, dirty_files,
-                 upstream_ref, upstream_url, ahead_count, behind_count, freshness,
-                 last_commit_at, last_commit_message, last_commit_author,
-                 last_scanned_at, last_fetch_at, last_pull_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
-            ON CONFLICT(path) DO UPDATE SET
-                root_path = excluded.root_path,
-                name = excluded.name,
-                depth = excluded.depth,
-                branch = excluded.branch,
-                dirty = excluded.dirty,
-                dirty_files = excluded.dirty_files,
-                upstream_ref = excluded.upstream_ref,
-                upstream_url = excluded.upstream_url,
-                ahead_count = excluded.ahead_count,
-                behind_count = excluded.behind_count,
-                freshness = excluded.freshness,
-                last_commit_at = excluded.last_commit_at,
-                last_commit_message = excluded.last_commit_message,
-                last_commit_author = excluded.last_commit_author,
-                last_scanned_at = excluded.last_scanned_at,
-                last_fetch_at = excluded.last_fetch_at,
-                last_pull_at = excluded.last_pull_at,
-                updated_at = CURRENT_TIMESTAMP",
+            Self::UPSERT_REPO_SQL,
             params![
-                repo.path,
-                repo.root_path,
-                repo.name,
-                repo.depth,
-                repo.branch,
-                repo.dirty as i32,
-                dirty_files,
-                repo.upstream_ref,
-                repo.upstream_url,
-                repo.ahead_count,
-                repo.behind_count,
-                freshness_str,
-                repo.last_commit_at,
-                repo.last_commit_message,
-                repo.last_commit_author,
-                repo.last_scanned_at,
-                repo.last_fetch_at,
-                repo.last_pull_at,
+                repo.path, repo.root_path, repo.name, repo.depth, repo.branch,
+                repo.dirty as i32, dirty_files, repo.upstream_ref, repo.upstream_url,
+                repo.ahead_count, repo.behind_count, freshness_str,
+                repo.last_commit_at, repo.last_commit_message, repo.last_commit_author,
+                repo.last_scanned_at, repo.last_fetch_at, repo.last_pull_at,
             ],
         )?;
 
@@ -334,6 +356,8 @@ impl Database {
     /// Atomically move repository record (delete old path, insert new path)
     pub fn move_repository(&self, old_path: &str, repo: &mut Repository) -> Result<()> {
         // Use immediate_transaction to ensure correct behavior under WAL mode
+        // Use unchecked_transaction because rusqlite requires &mut self for transaction().
+        // This is safe here because there are no nested transactions in the current call graph.
         let tx = self.conn.unchecked_transaction()?;
         
         // Delete old record
@@ -343,35 +367,10 @@ impl Database {
         )?;
         
         // Insert new record
-        let dirty_files = repo.dirty_files.join("\n");
-        let freshness_str = repo.freshness.as_str();
+        let (dirty_files, freshness_str) = Self::build_repo_params(repo);
         
         tx.execute(
-            "INSERT INTO repositories
-                (path, root_path, name, depth, branch, dirty, dirty_files,
-                 upstream_ref, upstream_url, ahead_count, behind_count, freshness,
-                 last_commit_at, last_commit_message, last_commit_author,
-                 last_scanned_at, last_fetch_at, last_pull_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
-            ON CONFLICT(path) DO UPDATE SET
-                root_path = excluded.root_path,
-                name = excluded.name,
-                depth = excluded.depth,
-                branch = excluded.branch,
-                dirty = excluded.dirty,
-                dirty_files = excluded.dirty_files,
-                upstream_ref = excluded.upstream_ref,
-                upstream_url = excluded.upstream_url,
-                ahead_count = excluded.ahead_count,
-                behind_count = excluded.behind_count,
-                freshness = excluded.freshness,
-                last_commit_at = excluded.last_commit_at,
-                last_commit_message = excluded.last_commit_message,
-                last_commit_author = excluded.last_commit_author,
-                last_scanned_at = excluded.last_scanned_at,
-                last_fetch_at = excluded.last_fetch_at,
-                last_pull_at = excluded.last_pull_at,
-                updated_at = CURRENT_TIMESTAMP",
+            Self::UPSERT_REPO_SQL,
             params![
                 repo.path, repo.root_path, repo.name, repo.depth, repo.branch,
                 repo.dirty as i32, dirty_files, repo.upstream_ref, repo.upstream_url,
@@ -388,7 +387,12 @@ impl Database {
     /// Row to repository object
     fn row_to_repository(row: &rusqlite::Row) -> Result<Repository, rusqlite::Error> {
         let dirty_files_str: String = row.get("dirty_files")?;
-        let dirty_files = dirty_files_str.lines().map(|s| s.to_string()).collect();
+        let dirty_files = if dirty_files_str.starts_with('[') {
+            serde_json::from_str(&dirty_files_str).unwrap_or_default()
+        } else {
+            // Backward compatibility: old newline-separated format
+            dirty_files_str.lines().map(|s| s.to_string()).collect()
+        };
         let freshness_str: String = row.get("freshness")?;
 
         Ok(Repository {
@@ -418,9 +422,6 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
     #[test]
     fn test_database_operations() {
         // Test basic database operations

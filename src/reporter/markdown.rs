@@ -76,7 +76,7 @@ impl Reporter for MarkdownReporter {
             
             for repo in needs_attention {
                 md.push_str(&format!("### {}\n\n", repo.name));
-                md.push_str(&format!("- **path**: `{}`\n", repo.path));
+                md.push_str(&format!("- **path**: `{}`\n", crate::utils::sanitize_path(&repo.path)));
                 md.push_str(&format!("- **Branch**: `{}`\n", 
                     repo.branch.as_deref().unwrap_or("N/A")));
                 

@@ -226,9 +226,11 @@ impl RepoSync {
                 if name == ".git" {
                     return true;
                 }
-                !source.ignore_patterns.iter().any(|p| {
-                    name == *p || name.starts_with(p.trim_end_matches('*'))
-                })
+                // 跳过 needauth 目录，避免已移动的仓库被重复计数
+                if name == crate::utils::NEEDAUTH_DIR {
+                    return false;
+                }
+                !crate::utils::should_ignore_entry(&name, &source.ignore_patterns)
             });
 
         for entry in walker {

@@ -30,7 +30,7 @@ pub struct TaskResult<T> {
 /// # Features
 /// - Auto-handle panics (returns None)
 /// - Use blocking wait (non busy-wait)
-/// - Reasonable timeout (5 seconds)
+/// - Overall deadline (120s) to prevent infinite hang on stuck git2/fs ops
 pub fn execute_concurrent_raw<F, T>(tasks: Vec<F>, max_concurrent: usize) -> Vec<Option<T>>
 where
     F: FnOnce() -> T + Send + 'static,
@@ -106,8 +106,19 @@ where
     let mut results: Vec<Option<Option<T>>> = (0..total).map(|_| None).collect();
     let mut received = 0;
 
+    // Overall deadline to prevent infinite hang on stuck git2/fs operations
+    let overall_deadline = std::time::Instant::now() + std::time::Duration::from_secs(crate::utils::CONCURRENT_OVERALL_TIMEOUT_SECS);
+
     while received < total {
-        match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+        let remaining = overall_deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            eprintln!("Warning: concurrent execution exceeded overall deadline (120s), {} tasks unfinished", total - received);
+            break;
+        }
+        // Use per-recv timeout of 30s (capped by remaining overall time)
+        let recv_timeout = std::cmp::min(remaining, std::time::Duration::from_secs(crate::utils::CONCURRENT_RECV_TIMEOUT_SECS));
+
+        match rx.recv_timeout(recv_timeout) {
             Ok(task_result) => {
                 results[task_result.index] = Some(task_result.result);
                 received += 1;
@@ -116,9 +127,11 @@ where
                 // Check if all threads have finished
                 let active_handles = handles.iter().filter(|h| !h.is_finished()).count();
                 if active_handles == 0 {
-                    eprintln!("Warning: {} tasks incomplete, may have panicked", total - received);
+                    eprintln!("Warning: {} tasks incomplete, may have panicked or failed to send", total - received);
                     break;
                 }
+                // If we still have active handles but overall deadline not yet reached,
+                // loop again (with potentially shorter remaining timeout)
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 break;
@@ -126,8 +139,13 @@ where
         }
     }
 
-    // Wait for all threads to finish
+    // Best-effort join with its own deadline to avoid blocking forever
+    let join_deadline = std::time::Instant::now() + std::time::Duration::from_secs(crate::utils::CONCURRENT_JOIN_TIMEOUT_SECS);
     for handle in handles {
+        if std::time::Instant::now() > join_deadline {
+            eprintln!("Warning: join deadline exceeded, leaving remaining threads detached to prevent deadlock");
+            break;
+        }
         let _ = handle.join();
     }
 

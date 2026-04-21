@@ -252,6 +252,7 @@ pub struct PullSafeResult {
     pub skipped_repos: Vec<String>,  // Already up to date
     pub dirty_repos: Vec<DirtyRepoInfo>,    // Skipped due to local changes (includes file list)
     pub pulled_repos: Vec<(String, Vec<String>)>, // (repository name, new commit list)
+    pub success_repos: Vec<(String, Option<String>)>, // (repository name, latest commit message)
 }
 
 impl PullSafeResult {
@@ -263,6 +264,7 @@ impl PullSafeResult {
             skipped_repos: Vec::new(),
             dirty_repos: Vec::new(),
             pulled_repos: Vec::new(),
+            success_repos: Vec::new(),
         }
     }
 }
@@ -273,7 +275,7 @@ pub struct PullForceResult {
     pub total_count: usize,
     pub success_count: usize,
     pub failed_count: usize,
-    pub conflict_repos: Vec<String>,
+    pub conflict_repos: Vec<(String, String, String)>, // (name, path, stash_message)
 }
 
 impl PullForceResult {

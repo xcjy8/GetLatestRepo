@@ -25,8 +25,12 @@ impl Scanner {
             anyhow::bail!("ScanPath does not exist: {}", source.root_path);
         }
 
-        // Find all .git directories (synchronous, IO-bound but fast)
-        let git_dirs = Self::find_git_dirs(root, source)?;
+        // Find all .git directories (blocking IO, run in dedicated thread)
+        let root_buf = root.to_path_buf();
+        let source_clone = source.clone();
+        let git_dirs = tokio::task::spawn_blocking(move || {
+            Self::find_git_dirs(&root_buf, &source_clone)
+        }).await??;
 
         let pb: Option<Arc<Mutex<ProgressBar>>> = if progress {
             let bar = ProgressBar::new(git_dirs.len() as u64);
@@ -45,7 +49,7 @@ impl Scanner {
         // - Auto-handle panics (won't cause hung)
         // - Uses blocking wait (no busy-wait)
         // - Reasonable timeout (5 seconds)
-        const MAX_CONCURRENT: usize = 8;
+        const MAX_CONCURRENT: usize = crate::utils::DEFAULT_MAX_CONCURRENT_SCAN;
         
         // Build task list
         let tasks: Vec<_> = git_dirs
@@ -132,9 +136,11 @@ impl Scanner {
                 if name == ".git" {
                     return true; // Keep .git directory for detection
                 }
-                !source.ignore_patterns.iter().any(|p| {
-                    name == *p || name.starts_with(p.trim_end_matches('*'))
-                })
+                // 跳过 needauth 目录，避免已移动仓库被重复扫描入库
+                if name == crate::utils::NEEDAUTH_DIR {
+                    return false;
+                }
+                !crate::utils::should_ignore_entry(&name, &source.ignore_patterns)
             });
 
         for entry in walker {
@@ -174,8 +180,19 @@ impl Scanner {
 
         for repo in existing {
             if repo.root_path == root_path && !current_paths.contains(&repo.path) {
-                // Repository has been deleted
-                db.delete_repository(&repo.path)?;
+                // Before deleting, check if the repository was moved to needauth/
+                let needauth_path = std::path::Path::new(root_path).join(crate::utils::NEEDAUTH_DIR).join(&repo.name);
+                if needauth_path.exists() {
+                    // Update record to new path instead of deleting
+                    let mut updated = repo;
+                    updated.path = needauth_path.to_string_lossy().to_string();
+                    updated.root_path = std::path::Path::new(root_path).join(crate::utils::NEEDAUTH_DIR).to_string_lossy().to_string();
+                    if let Err(e) = db.upsert_repository(&mut updated) {
+                        eprintln!("Warning: failed to update moved repo record '{}': {}", updated.name, e);
+                    }
+                } else {
+                    db.delete_repository(&repo.path)?;
+                }
             }
         }
 
@@ -204,7 +221,7 @@ impl Scanner {
                     all_repos.append(&mut repos);
                 }
                 Err(e) => {
-                    eprintln!("❌ Scanfailed {}: {}", source.root_path, e);
+                    eprintln!("❌ Scan failed {}: {}", source.root_path, e);
                 }
             }
         }
@@ -215,9 +232,6 @@ impl Scanner {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
     #[test]
     fn test_find_git_dirs() {
         // Test directory found logic

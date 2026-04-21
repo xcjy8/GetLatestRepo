@@ -214,12 +214,8 @@ impl AppConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
     #[test]
     fn test_config_save_load() {
-        let temp_dir = TempDir::new().unwrap();
         // Mocking config directory needed, skipping for now
     }
 }

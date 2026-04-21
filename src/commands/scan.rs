@@ -21,7 +21,7 @@ pub async fn execute(
     should_fetch: bool,
     format: OutputFormat,
     out_path: Option<PathBuf>,
-    _depth: Option<usize>,
+    depth: Option<usize>,
     jobs: usize,
     no_security_check: bool,
 ) -> Result<()> {
@@ -32,7 +32,13 @@ pub async fn execute(
     println!("{} Starting scan...", "▶".cyan());
 
     // Get scan sources from config
-    let sources = config.scan_sources.clone();
+    let mut sources = config.scan_sources.clone();
+    // Override max_depth if --depth is specified
+    if let Some(d) = depth {
+        for source in &mut sources {
+            source.max_depth = d as i32;
+        }
+    }
     if sources.is_empty() {
         anyhow::bail!("No enabled scan sources");
     }

@@ -2,6 +2,27 @@
 
 use std::path::Path;
 
+// ==================== Constants ====================
+
+/// Directory name for repositories requiring authentication
+pub const NEEDAUTH_DIR: &str = "needauth";
+
+/// Default HTTP proxy address
+pub const DEFAULT_PROXY_URL: &str = "http://127.0.0.1:7890";
+
+/// Default max concurrency for scanning
+pub const DEFAULT_MAX_CONCURRENT_SCAN: usize = 8;
+
+/// Overall timeout for concurrent execution (seconds)
+pub const CONCURRENT_OVERALL_TIMEOUT_SECS: u64 = 120;
+/// Per-recv timeout for concurrent execution (seconds)
+pub const CONCURRENT_RECV_TIMEOUT_SECS: u64 = 30;
+/// Join deadline for concurrent execution (seconds)
+pub const CONCURRENT_JOIN_TIMEOUT_SECS: u64 = 30;
+
+/// Max file size for security scan (1MB)
+pub const SECURITY_MAX_FILE_SIZE: usize = 1024 * 1024;
+
 /// Sanitize URL, remove credential info
 ///
 /// Convert `https://token@github.com/user/repo.git` to `https://github.com/user/repo.git`
@@ -54,6 +75,30 @@ pub fn sanitize_path_buf(path: &Path) -> String {
     sanitize_path(&path.to_string_lossy())
 }
 
+/// Check if a directory entry should be ignored based on patterns
+///
+/// Pattern rules:
+/// - Exact match: `node_modules` matches directory named exactly `node_modules`
+/// - Prefix match: `target*` matches any directory starting with `target`
+/// - Wildcard all: `*` or `**` matches everything
+pub fn should_ignore_entry(name: &str, patterns: &[String]) -> bool {
+    patterns.iter().any(|p| {
+        if p == "*" || p == "**" {
+            return true;
+        }
+        if let Some(prefix) = p.strip_suffix('*') {
+            // Prefix match (e.g. "target*" → match "target", "target-temp")
+            if prefix.is_empty() {
+                return true;
+            }
+            name.starts_with(prefix)
+        } else {
+            // Exact match
+            name == p
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,5 +145,29 @@ mod tests {
     fn test_sanitize_url_invalid() {
         // Invalid URL should be returned as-is
         assert_eq!(sanitize_url("not-a-url"), "not-a-url");
+    }
+
+    #[test]
+    fn test_should_ignore_entry_exact() {
+        assert!(should_ignore_entry("node_modules", &["node_modules".to_string()]));
+        assert!(!should_ignore_entry("my_node_modules", &["node_modules".to_string()]));
+    }
+
+    #[test]
+    fn test_should_ignore_entry_prefix() {
+        assert!(should_ignore_entry("target", &["target*".to_string()]));
+        assert!(should_ignore_entry("target-temp", &["target*".to_string()]));
+        assert!(!should_ignore_entry("my-target", &["target*".to_string()]));
+    }
+
+    #[test]
+    fn test_should_ignore_entry_wildcard() {
+        assert!(should_ignore_entry("anything", &["*".to_string()]));
+        assert!(should_ignore_entry("anything", &["**".to_string()]));
+    }
+
+    #[test]
+    fn test_should_ignore_entry_no_match() {
+        assert!(!should_ignore_entry("src", &["node_modules".to_string(), "target*".to_string()]));
     }
 }

@@ -49,7 +49,7 @@ impl From<&Repository> for RepositoryView {
 
         Self {
             name: repo.name.clone(),
-            path: repo.path.clone(),
+            path: crate::utils::sanitize_path(&repo.path),
             branch: repo.branch.clone().unwrap_or_else(|| "-".to_string()),
             status_class: status_class.to_string(),
             status_icon: status_icon.to_string(),

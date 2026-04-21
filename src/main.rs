@@ -119,7 +119,7 @@ fn is_process_running(pid: u32) -> bool {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<std::process::ExitCode> {
     // Initialize colored output
     colored::control::set_override(true);
 
@@ -135,8 +135,10 @@ async fn main() -> Result<()> {
     // Build proxy config
     let proxy_config = build_proxy_config(cli.proxy, cli.proxy_url);
 
-    match cli.command {
-        Commands::Init { path } => commands::init::execute(path).await,
+    let exit_code = match cli.command {
+        Commands::Init { path } => {
+            commands::init::execute(path).await.map(|_| 0)
+        }
         Commands::Scan {
             fetch,
             output,
@@ -144,13 +146,21 @@ async fn main() -> Result<()> {
             depth,
             jobs,
         } => {
-            commands::scan::execute(fetch, output, out, depth, validate_jobs(jobs), no_security_check).await
+            commands::scan::execute(fetch, output, out, depth, validate_jobs(jobs), no_security_check)
+                .await
+                .map(|_| 0)
         }
         Commands::Fetch { jobs, timeout } => {
-            commands::fetch::execute(validate_jobs(jobs), timeout, no_security_check, proxy_config).await
+            commands::fetch::execute(validate_jobs(jobs), timeout, no_security_check, proxy_config)
+                .await
+                .map(|_| 0)
         }
-        Commands::Status { path, diff } => commands::status::execute(path, diff).await,
-        Commands::Config { command } => commands::config::execute(command).await,
+        Commands::Status { path, diff } => {
+            commands::status::execute(path, diff).await.map(|_| 0)
+        }
+        Commands::Config { command } => {
+            commands::config::execute(command).await.map(|_| 0)
+        }
         Commands::Workflow {
             name,
             list,
@@ -178,9 +188,11 @@ async fn main() -> Result<()> {
             .await
         }
         Commands::Discard { path, yes } => {
-            commands::discard::execute(path, yes).await
+            commands::discard::execute(path, yes).await.map(|_| 0)
         }
-    }
+    }?;
+
+    Ok(std::process::ExitCode::from(exit_code as u8))
 }
 
 /// Build proxy configuration
@@ -206,9 +218,9 @@ fn build_proxy_config(proxy: bool, proxy_url: Option<String>) -> Option<ProxyCon
             enabled: true,
             http_proxy: proxy_url
                 .clone()
-                .unwrap_or_else(|| "http://127.0.0.1:7890".to_string()),
+                .unwrap_or_else(|| crate::utils::DEFAULT_PROXY_URL.to_string()),
             https_proxy: proxy_url
-                .unwrap_or_else(|| "http://127.0.0.1:7890".to_string()),
+                .unwrap_or_else(|| crate::utils::DEFAULT_PROXY_URL.to_string()),
         })
     } else {
         None

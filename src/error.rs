@@ -53,7 +53,7 @@ pub enum GetLatestRepoError {
     RepoDeletionRisk { detail: String },
 
     #[error("Safety check failed: {source}")]
-    SecuritytyCheckFailed { source: anyhow::Error },
+    SecurityCheckFailed { source: anyhow::Error },
 
     #[error("Security scan failed, skipped")]
     SecurityScanFailed,

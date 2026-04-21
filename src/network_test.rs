@@ -135,8 +135,6 @@ impl NetworkTester {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
-    use std::fs;
 
     #[tokio::test]
     async fn test_tcp_connect_localhost() {

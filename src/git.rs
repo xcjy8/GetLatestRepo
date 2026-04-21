@@ -22,8 +22,8 @@ impl Default for ProxyConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            http_proxy: "http://127.0.0.1:7890".to_string(),
-            https_proxy: "http://127.0.0.1:7890".to_string(),
+            http_proxy: crate::utils::DEFAULT_PROXY_URL.to_string(),
+            https_proxy: crate::utils::DEFAULT_PROXY_URL.to_string(),
         }
     }
 }
@@ -138,8 +138,9 @@ impl GitOps {
             .map(|fc| fc.path.clone())
             .collect();
 
-        // Get upstream info
+        // Get upstream info (sanitize URL to remove credentials before storage)
         let (upstream_ref, upstream_url) = Self::get_upstream_info(&repo)?;
+        let upstream_url = upstream_url.map(|u| crate::utils::sanitize_url(&u));
 
         // Calculate ahead/behind
         let (ahead_count, behind_count, freshness) = 
@@ -357,7 +358,7 @@ impl GitOps {
     /// 
     /// Use git2 ProxyOptions to configure proxy per request,
     /// avoiding global state pollution and concurrency safety issues from env::set_var.
-    pub fn fetch_detailed(&self, path: &Path, _timeout_secs: u64) -> FetchStatus {
+    pub fn fetch_detailed(&self, path: &Path, timeout_secs: u64) -> FetchStatus {
         let repo = match Self::open(path) {
             Ok(r) => r,
             Err(e) => return FetchStatus::OtherError { 
@@ -389,8 +390,12 @@ impl GitOps {
         };
 
         // Set timeout and callbacks
+        let start = std::time::Instant::now();
         let mut callbacks = RemoteCallbacks::new();
-        callbacks.sideband_progress(|_data| true);
+        callbacks.sideband_progress(move |_data| {
+            // Return false to abort fetch if timeout exceeded
+            start.elapsed() < std::time::Duration::from_secs(timeout_secs)
+        });
 
         let mut fetch_opts = git2::FetchOptions::new();
         fetch_opts.remote_callbacks(callbacks);
@@ -894,17 +899,17 @@ pub fn format_duration(dt: &Option<chrono::DateTime<chrono::Local>>) -> String {
             let duration = now.signed_duration_since(*dt);
             
             if duration.num_minutes() < 1 {
-                "Just now".to_string()
+                "刚刚".to_string()
             } else if duration.num_hours() < 1 {
-                format!("{} minutes ago", duration.num_minutes())
+                format!("{} 分钟前", duration.num_minutes())
             } else if duration.num_days() < 1 {
-                format!("{} hours ago", duration.num_hours())
+                format!("{} 小时前", duration.num_hours())
             } else if duration.num_days() < 30 {
-                format!("{} days ago", duration.num_days())
+                format!("{} 天前", duration.num_days())
             } else if duration.num_days() < 365 {
-                format!("{} months ago", duration.num_days() / 30)
+                format!("{} 个月前", duration.num_days() / 30)
             } else {
-                format!("{} years ago", duration.num_days() / 365)
+                format!("{} 年前", duration.num_days() / 365)
             }
         }
         None => "-".to_string(),
