@@ -155,8 +155,8 @@ async fn main() -> Result<std::process::ExitCode> {
                 .await
                 .map(|_| 0)
         }
-        Commands::Status { path, diff } => {
-            commands::status::execute(path, diff).await.map(|_| 0)
+        Commands::Status { path, diff, issues } => {
+            commands::status::execute(path, diff, issues).await.map(|_| 0)
         }
         Commands::Config { command } => {
             commands::config::execute(command).await.map(|_| 0)

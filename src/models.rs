@@ -64,7 +64,7 @@ impl From<&str> for Freshness {
 pub struct ScanSource {
     pub id: Option<i64>,
     pub root_path: String,
-    pub max_depth: i32,
+    pub max_depth: usize,
     pub ignore_patterns: Vec<String>,
     pub follow_symlinks: bool,
     pub enabled: bool,
@@ -196,6 +196,8 @@ pub struct FetchResult {
     pub success: bool,
     pub error: Option<String>,
     pub duration_ms: u64,
+    /// Number of retries performed for network errors
+    pub retry_count: u32,
 }
 
 /// File change info

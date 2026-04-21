@@ -66,12 +66,16 @@ pub enum Commands {
 
     /// View a single repository's details
     Status {
-        /// Repository path
+        /// Repository path (ignored when --issues is set)
         path: PathBuf,
 
         /// Show diff
         #[arg(long)]
         diff: bool,
+
+        /// Show all repositories with issues (needauth, unreachable, dirty+behind, missing)
+        #[arg(long)]
+        issues: bool,
     },
 
     /// Configuration management

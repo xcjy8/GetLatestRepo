@@ -124,7 +124,7 @@ impl Scanner {
     /// Find all Git repository directories
     fn find_git_dirs(root: &Path, source: &ScanSource) -> Result<Vec<std::path::PathBuf>> {
         let mut git_dirs = Vec::new();
-        let max_depth = source.max_depth as usize;
+        let max_depth = source.max_depth;
 
         let walker = WalkDir::new(root)
             .max_depth(max_depth)
@@ -179,6 +179,18 @@ impl Scanner {
             .collect();
 
         for repo in existing {
+            // 清理 needauth 孤儿记录：手动删除 needauth 目录后，DB 中指向不存在的 needauth 路径的记录
+            // NOTE: Blocking filesystem I/O. Acceptable here because this runs in a blocking context.
+            let expected_needauth_root = std::path::Path::new(root_path).join(crate::utils::NEEDAUTH_DIR);
+            if repo.root_path == expected_needauth_root.to_string_lossy()
+                && !std::path::Path::new(&repo.path).exists()
+            {
+                if let Err(e) = db.delete_repository(&repo.path) {
+                    eprintln!("Warning: failed to delete orphan needauth record '{}': {}", repo.name, e);
+                }
+                continue;
+            }
+
             if repo.root_path == root_path && !current_paths.contains(&repo.path) {
                 // Before deleting, check if the repository was moved to needauth/
                 let needauth_path = std::path::Path::new(root_path).join(crate::utils::NEEDAUTH_DIR).join(&repo.name);

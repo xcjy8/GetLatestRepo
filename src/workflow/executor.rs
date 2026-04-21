@@ -167,6 +167,15 @@ impl WorkflowExecutor {
         let total_steps = self.workflow.steps.len();
 
         for (idx, step) in self.workflow.steps.iter().enumerate() {
+            // Check for graceful shutdown request before starting each step
+            if crate::signal_handler::is_shutdown_requested() {
+                if !self.silent {
+                    println!("  {} Workflow interrupted by user, stopping early...", "⚠️".yellow());
+                }
+                result.add_error("Workflow interrupted by user".to_string());
+                break;
+            }
+
             let step_num = idx + 1;
 
             match step {
@@ -415,10 +424,30 @@ impl WorkflowExecutor {
                                 if !pull_result.conflict_repos.is_empty() {
                                     println!("   {} 个仓库 stash pop 冲突，需手动恢复：",
                                         pull_result.conflict_repos.len().to_string().yellow());
-                                    for (name, path, stash_name) in &pull_result.conflict_repos {
-                                        println!("     - {} (stash 消息: {})", name, stash_name);
-                                        println!("       查找: git -C {} stash list | grep '{}'", path, stash_name);
-                                        println!("       恢复: git -C {} stash pop stash@{{index}}", path);
+                                    for (i, info) in pull_result.conflict_repos.iter().enumerate() {
+                                        let is_last = i == pull_result.conflict_repos.len() - 1;
+                                        let repo_connector = if is_last { "└─" } else { "├─" };
+                                        
+                                        println!("     {} 📦 {}", repo_connector, info.name.bold());
+                                        
+                                        let stash_display = match info.stash_index {
+                                            Some(idx) => format!("{} (stash@{{{}}})", info.stash_message, idx),
+                                            None => info.stash_message.clone(),
+                                        };
+                                        println!("        ├─ stash: {}", stash_display);
+                                        
+                                        if !info.conflict_files.is_empty() {
+                                            println!("        ├─ 冲突文件 ({}个):", info.conflict_files.len());
+                                            for (j, file) in info.conflict_files.iter().enumerate() {
+                                                let is_last_file = j == info.conflict_files.len() - 1;
+                                                let file_connector = if is_last_file { "└─" } else { "├─" };
+                                                println!("        │  {} {}", file_connector, file);
+                                            }
+                                        }
+                                        
+                                        let cmd_connector = if info.conflict_files.is_empty() { "└─" } else { "└─" };
+                                        println!("        {} 恢复命令: git -C {} stash pop stash@{{index}}", 
+                                            cmd_connector, info.path);
                                     }
                                 }
                                 if pull_result.failed_count > 0 {
@@ -514,7 +543,7 @@ impl WorkflowExecutor {
         open: bool,
         only_dirty_or_behind: bool,
     ) -> Result<RepoSummary> {
-        use crate::reporter::{html::HtmlReporter, markdown::MarkdownReporter, terminal::TerminalReporter, Reporter, save_report};
+        use crate::reporter::{html::HtmlReporter, markdown::MarkdownReporter, terminal::TerminalReporter, Reporter, save_report_async};
 
         let repos = Scanner::scan_all(sources, db, false).await?;
 
@@ -548,9 +577,11 @@ impl WorkflowExecutor {
             OutputFormat::Html => {
                 let reporter = HtmlReporter::new();
                 let report = reporter.generate(&repos, &summary)?;
-                let path = save_report(&report, None, "html")?;
+                let path = save_report_async(report, None, "html".to_string()).await?;
 
-                let _ = super::types::ensure_reports_dir(&path);
+                if let Err(e) = super::types::ensure_reports_dir(&path) {
+                    eprintln!("   Warning: Failed to ensure reports directory: {}", e);
+                }
 
                 if !self.silent {
                     println!();
@@ -564,7 +595,7 @@ impl WorkflowExecutor {
             OutputFormat::Markdown => {
                 let reporter = MarkdownReporter::new();
                 let report = reporter.generate(&repos, &summary)?;
-                let path = save_report(&report, None, "md")?;
+                let path = save_report_async(report, None, "md".to_string()).await?;
                 if !self.silent {
                     println!();
                     println!("{} Markdown report: {}", "✓".green(), path.display());
@@ -1114,12 +1145,18 @@ impl WorkflowExecutor {
                     }
                     success_paths.push((name, path));
                 }
-                Some((name, path, Ok(crate::git::PullForceOutcome::Conflict(stash_name)))) => {
+                Some((name, path, Ok(crate::git::PullForceOutcome::Conflict { stash_name, conflict_files, stash_index }))) => {
                     pull_result.success_count += 1;
                     if let Err(e) = db.update_pull_time(&path) {
                         eprintln!("   ⚠️ Update pull time failed '{}': {}", crate::utils::sanitize_path(&path), e);
                     }
-                    pull_result.conflict_repos.push((name.clone(), path.clone(), stash_name));
+                    pull_result.conflict_repos.push(crate::workflow::types::ConflictInfo {
+                        name: name.clone(),
+                        path: path.clone(),
+                        stash_message: stash_name,
+                        conflict_files,
+                        stash_index,
+                    });
                     success_paths.push((name, path));
                 }
                 Some((name, _, Err(e))) => {
@@ -1144,7 +1181,9 @@ impl WorkflowExecutor {
                     fresh.id = old_repo.id;
                     fresh.last_fetch_at = old_repo.last_fetch_at;
                     fresh.last_pull_at = Some(chrono::Local::now());
-                    let _ = db.upsert_repository(&mut fresh);
+                    if let Err(e) = db.upsert_repository(&mut fresh) {
+                        eprintln!("   Warning: Failed to update repository after pull: {}", e);
+                    }
                 }
             }
         }

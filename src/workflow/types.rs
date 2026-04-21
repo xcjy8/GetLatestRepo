@@ -269,13 +269,23 @@ impl PullSafeResult {
     }
 }
 
+/// Pull-force conflict info
+#[derive(Debug, Clone)]
+pub struct ConflictInfo {
+    pub name: String,
+    pub path: String,
+    pub stash_message: String,
+    pub conflict_files: Vec<String>,
+    pub stash_index: Option<usize>,
+}
+
 /// Pull-force results
 #[derive(Debug, Clone)]
 pub struct PullForceResult {
     pub total_count: usize,
     pub success_count: usize,
     pub failed_count: usize,
-    pub conflict_repos: Vec<(String, String, String)>, // (name, path, stash_message)
+    pub conflict_repos: Vec<ConflictInfo>,
 }
 
 impl PullForceResult {

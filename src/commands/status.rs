@@ -6,10 +6,21 @@ use std::path::PathBuf;
 
 use crate::db::Database;
 use crate::git::GitOps;
-use crate::reporter::terminal::print_repo_detail;
+use crate::reporter::terminal::{print_issues_view, print_repo_detail};
 
 /// Execute status command
-pub async fn execute(path: PathBuf, show_diff: bool) -> Result<()> {
+pub async fn execute(path: PathBuf, show_diff: bool, issues: bool) -> Result<()> {
+    let db = Database::open()?;
+    
+    if issues {
+        let repos = tokio::task::spawn_blocking(move || {
+            db.list_repositories()
+        }).await
+            .map_err(|e| anyhow::anyhow!("Failed to list repositories: {}", e))??;
+        print_issues_view(&repos);
+        return Ok(());
+    }
+    
     let canonical = path
         .canonicalize()
         .with_context(|| format!("Unable to access path: {}", path.display()))?;
@@ -18,12 +29,9 @@ pub async fn execute(path: PathBuf, show_diff: bool) -> Result<()> {
         anyhow::bail!("Not a valid Git repository: {}", canonical.display());
     }
 
-    // Try getting from database
-    let db = Database::open()?;
     let repo = match db.get_repository(&canonical.to_string_lossy())? {
         Some(r) => r,
         None => {
-            // Realtime scan
             let parent = canonical
                 .parent()
                 .map(|p| p.to_string_lossy().to_string())

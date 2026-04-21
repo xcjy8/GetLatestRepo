@@ -214,7 +214,7 @@ impl RepoSync {
     /// Count Git repositories in single source directory
     fn count_git_dirs_in_source(&self, root: &Path, source: &ScanSource) -> Result<usize> {
         let mut count = 0;
-        let max_depth = source.max_depth as usize;
+        let max_depth = source.max_depth;
 
         let walker = WalkDir::new(root)
             .max_depth(max_depth)

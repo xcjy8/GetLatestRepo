@@ -206,7 +206,7 @@ impl Database {
             Ok(ScanSource {
                 id: row.get(0)?,
                 root_path: row.get(1)?,
-                max_depth: row.get(2)?,
+                max_depth: row.get::<_, usize>(2)?,
                 ignore_patterns,
                 follow_symlinks: row.get::<_, i32>(4)? != 0,
                 enabled: row.get::<_, i32>(5)? != 0,

@@ -575,8 +575,14 @@ pub enum PullForceOutcome {
     /// Success (clean repository directly pulled, or dirty repository stash-pull-pop succeeded)
     Success,
     /// Stash pop conflict (pull succeeded, but pop failed)
-    /// Parameter is the stash name
-    Conflict(String),
+    Conflict {
+        /// Stash message
+        stash_name: String,
+        /// Conflict file list
+        conflict_files: Vec<String>,
+        /// Stash index in stash list (e.g., stash@{2})
+        stash_index: Option<usize>,
+    },
 }
 
 impl GitOps {
@@ -616,10 +622,31 @@ impl GitOps {
         // Fast-forward merge
         let remote_obj = repo.find_object(remote_oid, None)
             .map_err(|e| GetLatestRepoError::Other(anyhow::anyhow!("Unable to find remote commit object: {}", e)))?;
+        
+        // Save original OID for potential rollback
+        let original_oid = local_ref.target()
+            .ok_or_else(|| GetLatestRepoError::Other(anyhow::anyhow!("Unable to get current branch OID")))?;
+        
         repo.checkout_tree(&remote_obj, None)
             .map_err(|e| GetLatestRepoError::Other(anyhow::anyhow!("Checkout remote changes failed: {}", e)))?;
-        local_ref.set_target(remote_oid, "pull-safe: fast-forward")
-            .map_err(|e| GetLatestRepoError::Other(anyhow::anyhow!("Update local branch reference failed: {}", e)))?;
+        
+        if let Err(e) = local_ref.set_target(remote_oid, "pull-safe: fast-forward") {
+            // Rollback: restore working directory to original commit to maintain consistency
+            let original_obj = repo.find_object(original_oid, None)
+                .map_err(|e2| GetLatestRepoError::Other(anyhow::anyhow!(
+                    "CRITICAL: Update branch ref failed ({}), and rollback checkout also failed ({}). Repository may be in an inconsistent state.",
+                    e, e2
+                )))?;
+            repo.checkout_tree(&original_obj, None)
+                .map_err(|e2| GetLatestRepoError::Other(anyhow::anyhow!(
+                    "CRITICAL: Update branch ref failed ({}), and rollback checkout also failed ({}). Repository may be in an inconsistent state.",
+                    e, e2
+                )))?;
+            return Err(GetLatestRepoError::Other(anyhow::anyhow!(
+                "Update local branch reference failed: {}. Working directory has been restored to the original state.",
+                e
+            )));
+        }
         
         Ok(())
     }
@@ -647,31 +674,105 @@ impl GitOps {
         };
 
         // 2. Pull (ff-only, safest)
-        let branch = Self::get_current_branch(&repo)?;
-        if let Some(ref branch_name) = branch {
-            let remote_branch = format!("origin/{}", branch_name);
-            let remote_ref = repo.find_reference(&format!("refs/remotes/{}", remote_branch))?;
-            let remote_oid = remote_ref.target().context("Unable to get remote branch OID")?;
-            
-            let mut local_ref = repo.find_reference(&format!("refs/heads/{}", branch_name))?;
-            
-            // Try fast-forward merge
-            repo.checkout_tree(&repo.find_object(remote_oid, None)?, None)?;
-            local_ref.set_target(remote_oid, "pull-force: fast-forward")?;
-        }
-
-        // 3. If stash exists, attempt pop
-        if stash_created {
-            match repo.stash_pop(0, None) {
-                Ok(()) => Ok(PullForceOutcome::Success),
-                Err(_) => {
-                    // Pop failed, returning Conflict for manual resolution
-                    Ok(PullForceOutcome::Conflict(stash_name))
+        let pull_result = (|| -> Result<()> {
+            let branch = Self::get_current_branch(&repo)?;
+            if let Some(ref branch_name) = branch {
+                let remote_branch = format!("origin/{}", branch_name);
+                let remote_ref = repo.find_reference(&format!("refs/remotes/{}", remote_branch))?;
+                let remote_oid = remote_ref.target().context("Unable to get remote branch OID")?;
+                
+                let mut local_ref = repo.find_reference(&format!("refs/heads/{}", branch_name))?;
+                
+                // Save original OID for potential rollback
+                let original_oid = local_ref.target()
+                    .ok_or_else(|| GetLatestRepoError::Other(anyhow::anyhow!("Unable to get current branch OID")))?;
+                
+                // Try fast-forward merge
+                repo.checkout_tree(&repo.find_object(remote_oid, None)?, None)?;
+                
+                if let Err(e) = local_ref.set_target(remote_oid, "pull-force: fast-forward") {
+                    // Rollback: restore working directory to original commit to maintain consistency
+                    let original_obj = repo.find_object(original_oid, None)
+                        .map_err(|e2| GetLatestRepoError::Other(anyhow::anyhow!(
+                            "CRITICAL: Update branch ref failed ({}), and rollback checkout also failed ({}). Repository may be in an inconsistent state.",
+                            e, e2
+                        )))?;
+                    repo.checkout_tree(&original_obj, None)
+                        .map_err(|e2| GetLatestRepoError::Other(anyhow::anyhow!(
+                            "CRITICAL: Update branch ref failed ({}), and rollback checkout also failed ({}). Repository may be in an inconsistent state.",
+                            e, e2
+                        )))?;
+                    return Err(GetLatestRepoError::Other(anyhow::anyhow!(
+                        "Update local branch reference failed: {}. Working directory has been restored to the original state.",
+                        e
+                    )));
                 }
             }
-        } else {
-            Ok(PullForceOutcome::Success)
+            Ok(())
+        })();
+
+        match pull_result {
+            Ok(()) => {
+                // 3. If stash exists, attempt pop
+                if stash_created {
+                    match repo.stash_pop(0, None) {
+                        Ok(()) => Ok(PullForceOutcome::Success),
+                        Err(_) => {
+                            // Pop failed, collect conflict details for manual resolution
+                            let conflict_files = Self::get_conflict_files(&mut repo);
+                            let stash_index = Self::find_stash_index(&mut repo, &stash_name);
+                            Ok(PullForceOutcome::Conflict {
+                                stash_name,
+                                conflict_files,
+                                stash_index,
+                            })
+                        }
+                    }
+                } else {
+                    Ok(PullForceOutcome::Success)
+                }
+            }
+            Err(e) => {
+                // Pull failed after stash was created — warn user about the orphan stash
+                if stash_created {
+                    eprintln!("   ⚠️ Pull failed, but local changes were saved to stash: {}", stash_name);
+                    eprintln!("      You can restore them manually with: git stash pop stash@{{0}}");
+                }
+                Err(e)
+            }
         }
+    }
+
+    /// Get conflicted files after a failed stash pop
+    fn get_conflict_files(repo: &mut git2::Repository) -> Vec<String> {
+        let mut opts = git2::StatusOptions::new();
+        opts.include_untracked(false);
+        match repo.statuses(Some(&mut opts)) {
+            Ok(statuses) => statuses.iter()
+                .filter(|entry| entry.status().contains(git2::Status::CONFLICTED))
+                .filter_map(|entry| entry.path().map(|s| s.to_string()))
+                .collect(),
+            Err(e) => {
+                eprintln!("Warning: failed to get conflict files: {}", e);
+                Vec::new()
+            }
+        }
+    }
+
+    /// Find stash index by message
+    fn find_stash_index(repo: &mut git2::Repository, stash_name: &str) -> Option<usize> {
+        let mut result = None;
+        if let Err(e) = repo.stash_foreach(|index, message, _oid| {
+            if message == stash_name {
+                result = Some(index);
+                false // stop iterating
+            } else {
+                true
+            }
+        }) {
+            eprintln!("Warning: failed to iterate stashes: {}", e);
+        }
+        result
     }
 
     /// Get recent N commits (used to display new commits after pull)

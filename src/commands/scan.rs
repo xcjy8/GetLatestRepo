@@ -11,7 +11,7 @@ use crate::commands::ensure_initialized;
 use crate::fetcher::Fetcher;
 use crate::models::RepoSummary;
 use crate::reporter::{
-    html::HtmlReporter, markdown::MarkdownReporter, save_report, terminal::TerminalReporter,
+    html::HtmlReporter, markdown::MarkdownReporter, save_report_async, terminal::TerminalReporter,
     terminal::print_scan_summary, Reporter,
 };
 use crate::scanner::Scanner;
@@ -36,7 +36,7 @@ pub async fn execute(
     // Override max_depth if --depth is specified
     if let Some(d) = depth {
         for source in &mut sources {
-            source.max_depth = d as i32;
+            source.max_depth = d;
         }
     }
     if sources.is_empty() {
@@ -79,14 +79,14 @@ pub async fn execute(
             let reporter = HtmlReporter::new();
             let report_content = reporter.generate(&repos, &summary)?;
             let extension = reporter.extension();
-            let path = save_report(&report_content, out_path, extension)?;
+            let path = save_report_async(report_content, out_path, extension.to_string()).await?;
             println!("{} HTML report saved: {}", "✓".green(), path.display());
         }
         OutputFormat::Markdown => {
             let reporter = MarkdownReporter::new();
             let report_content = reporter.generate(&repos, &summary)?;
             let extension = reporter.extension();
-            let path = save_report(&report_content, out_path, extension)?;
+            let path = save_report_async(report_content, out_path, extension.to_string()).await?;
             println!("{} Markdown report saved: {}", "✓".green(), path.display());
         }
     }

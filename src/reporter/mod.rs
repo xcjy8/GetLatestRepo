@@ -41,3 +41,10 @@ pub fn save_report(content: &str, path: Option<PathBuf>, extension: &str) -> Res
     std::fs::write(&path, content)?;
     Ok(path)
 }
+
+/// Async wrapper for save_report to avoid blocking the async runtime on filesystem I/O
+pub async fn save_report_async(content: String, path: Option<PathBuf>, extension: String) -> Result<PathBuf> {
+    tokio::task::spawn_blocking(move || {
+        save_report(&content, path, &extension)
+    }).await?
+}

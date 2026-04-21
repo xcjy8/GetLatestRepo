@@ -68,35 +68,43 @@ where
             thread::sleep(std::time::Duration::from_millis(1));
         }
 
-        let tx = Sender::clone(&tx);
-        let active_count = Arc::clone(&active_count);
+        let tx_inner = Sender::clone(&tx);
+        let active_count_inner = Arc::clone(&active_count);
 
-        let handle = thread::spawn(move || {
-            // Use RAII guard to ensure counter decrements correctly (even on panic)
-            struct CountGuard(Arc<AtomicUsize>);
-            impl Drop for CountGuard {
-                fn drop(&mut self) {
-                    self.0.fetch_sub(1, Ordering::SeqCst);
+        // Spawn thread with reduced stack size (1MB) to limit memory waste if threads are abandoned after timeout
+        match thread::Builder::new()
+            .stack_size(1024 * 1024)
+            .spawn(move || {
+                // Use RAII guard to ensure counter decrements correctly (even on panic)
+                struct CountGuard(Arc<AtomicUsize>);
+                impl Drop for CountGuard {
+                    fn drop(&mut self) {
+                        self.0.fetch_sub(1, Ordering::SeqCst);
+                    }
                 }
+                let _guard = CountGuard(active_count_inner);
+
+                // Execute task (catch panic)
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task));
+
+                // Send result (panicked returns None)
+                let result = match result {
+                    Ok(r) => Some(r),
+                    Err(_) => {
+                        eprintln!("Warning: task {} panicked", index);
+                        None
+                    }
+                };
+                let _ = tx_inner.send(TaskResult { index, result });
+                // _guard drops here, automatically decrementing counter
+            }) {
+            Ok(handle) => handles.push(handle),
+            Err(e) => {
+                eprintln!("Warning: failed to spawn thread for task {}: {}", index, e);
+                active_count.fetch_sub(1, Ordering::SeqCst);
+                let _ = tx.send(TaskResult { index, result: None });
             }
-            let _guard = CountGuard(active_count);
-
-            // Execute task (catch panic)
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task));
-
-            // Send result (panicked returns None)
-            let result = match result {
-                Ok(r) => Some(r),
-                Err(_) => {
-                    eprintln!("Warning: task {} panicked", index);
-                    None
-                }
-            };
-            let _ = tx.send(TaskResult { index, result });
-            // _guard drops here, automatically decrementing counter
-        });
-
-        handles.push(handle);
+        }
     }
 
     // Close sender

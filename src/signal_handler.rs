@@ -31,14 +31,9 @@ pub fn init() {
 }
 
 /// Check if shutdown was requested
-#[allow(dead_code)]
 pub fn is_shutdown_requested() -> bool {
     SHUTDOWN_REQUESTED.load(Ordering::Relaxed)
 }
-
-/// Interval for periodically polling shutdown flag
-#[allow(dead_code)]
-pub const SHUTDOWN_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 #[cfg(test)]
 mod tests {

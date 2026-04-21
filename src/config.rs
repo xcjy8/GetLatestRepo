@@ -153,7 +153,7 @@ impl AppConfig {
 
         let source = ScanSource {
             root_path: path_str,
-            max_depth: self.default_depth as i32,
+            max_depth: self.default_depth,
             ignore_patterns: self.ignore_patterns.clone(),
             ..Default::default()
         };
