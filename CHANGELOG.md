@@ -2,6 +2,23 @@
 
 ---
 
+## [0.1.5] - 2026-04-22
+
+> 基于数据验证结果，彻底移除 git2 网络 fetch 路径
+
+### Changed
+
+- `git.rs`: `fetch_detailed` 直接走 `fetch_with_git_command`，不再尝试 git2
+- `fetcher.rs`: 移除 git2 fallback 缓存、fallback 信息汇总等配套逻辑
+- `git.rs`: 保留 `fetch_with_git2` 作为预留接口（标记 `#[allow(dead_code)]`），本地操作未来仍可能使用
+
+### Fixed
+
+- 修复双层架构导致的每个仓库浪费 3 秒等待问题（git2 平均 1600ms > 原生 git 1200ms，且无优势）
+- 修复 5 并发下 git2 部分仓库耗时翻倍的问题（如 JustAnime 888ms→3491ms）
+
+---
+
 ## [0.1.4] - 2026-04-22
 
 > fetch 双层架构、进度条精简与 git2 偏好缓存

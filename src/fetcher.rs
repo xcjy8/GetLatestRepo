@@ -32,9 +32,11 @@ pub struct FetchExecutionResult {
     pub retry_count: u32,
     /// Whether restored from needauth (auth issue resolved)
     pub restored_from_needauth: bool,
-    /// Whether this fetch fell back from git2 to native git command
+    #[allow(dead_code)]
+    /// Whether this fetch fell back from git2 to native git command (保留字段，当前不再使用)
     pub fallback_from_git2: bool,
-    /// Reason for fallback (None if git2 succeeded directly)
+    #[allow(dead_code)]
+    /// Reason for fallback (None if git2 succeeded directly) (保留字段，当前不再使用)
     pub fallback_reason: Option<String>,
 }
 
@@ -73,8 +75,6 @@ pub struct Fetcher {
     proxy: ProxyConfig,
     move_to_needauth: bool,
     auto_sync: bool,
-    /// 已知 git2 不适用的仓库路径缓存（直接使用原生 git 命令）
-    git2_fallback_cache: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 impl Fetcher {
@@ -87,7 +87,6 @@ impl Fetcher {
             proxy: ProxyConfig::default(),
             move_to_needauth: true,
             auto_sync: true,
-            git2_fallback_cache: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         }
     }
 
@@ -156,7 +155,6 @@ impl Fetcher {
             let security_scan = self.security_scan;
             let auto_skip = self.auto_skip_high_risk;
             let move_to_needauth = self.move_to_needauth;
-            let cache_arc = self.git2_fallback_cache.clone();
 
             let future = tokio::spawn(async move {
                 let _permit = permit.acquire().await.expect("Semaphore should not be closed");
@@ -183,7 +181,7 @@ impl Fetcher {
                             error: Some(format!("Repository path does not exist: {}", path_str)),
                             duration_ms: start.elapsed().as_millis() as u64,
                             retry_count: 0,
-                        }, None, false, None);
+                        }, None, false);
                     }
                     
                     let path_buf = path.to_path_buf();
@@ -236,7 +234,7 @@ impl Fetcher {
                                             error: Some(error_msg),
                                             duration_ms: start.elapsed().as_millis() as u64,
                                             retry_count: 0,
-                                        }, None, false, None);
+                                        }, None, false);
                                     }
                                 } else {
                                     return (original_repo, repo, FetchResultModel {
@@ -245,7 +243,7 @@ impl Fetcher {
                                         error: Some(error_msg),
                                         duration_ms: start.elapsed().as_millis() as u64,
                                         retry_count: 0,
-                                    }, None, false, None);
+                                    }, None, false);
                                 }
                             }
                         }
@@ -257,7 +255,6 @@ impl Fetcher {
 
                 // 2. Execute the fetch with exponential backoff retry for NetworkError
                 let path = std::path::PathBuf::from(&original_path);
-                let path_str = original_path.clone();
                 let repo_path = original_path.clone();
                 let repo_name = repo.name.clone();
                 let root_path = repo.root_path.clone();
@@ -266,7 +263,6 @@ impl Fetcher {
                 const MAX_RETRIES: u32 = 3;
                 let mut retry_count = 0u32;
                 let mut fetch_status = FetchStatus::Success;
-                let mut fallback_reason: Option<String> = None;
                 
                 // Overall deadline for all attempts combined (prevents unbounded retry time)
                 let overall_deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs.saturating_mul(2));
@@ -285,39 +281,21 @@ impl Fetcher {
 
                     let attempt_timeout = std::cmp::min(Duration::from_secs(timeout_secs), remaining);
 
-                    let prefer_git_command = {
-                        let cache = cache_arc.lock().unwrap();
-                        cache.contains(&path_str)
-                    };
-
-                    let (status, fb_reason) = match timeout(
+                    fetch_status = match timeout(
                         attempt_timeout,
                         tokio::task::spawn_blocking(move || {
-                            let git_ops = GitOps::with_proxy_and_preference(proxy, prefer_git_command);
+                            let git_ops = GitOps::with_proxy(proxy);
                             git_ops.fetch_detailed(&path, attempt_timeout.as_secs())
                         })
                     ).await {
-                        Ok(Ok(result)) => result,
+                        Ok(Ok((status, _))) => status,
                         Ok(Err(_)) => {
-                            (FetchStatus::OtherError { message: "Task was cancelled".to_string() }, None)
+                            FetchStatus::OtherError { message: "Task was cancelled".to_string() }
                         }
                         Err(_) => {
-                            (FetchStatus::NetworkError { message: format!("Timeout ({}s)", attempt_timeout.as_secs()) }, None)
+                            FetchStatus::NetworkError { message: format!("Timeout ({}s)", attempt_timeout.as_secs()) }
                         }
                     };
-
-                    // 只要发生过 fallback，就记住这个仓库下次跳过 git2
-                    if fb_reason.is_some() {
-                        let mut cache = cache_arc.lock().unwrap();
-                        cache.insert(path_str.clone());
-                    }
-
-                    // 保留第一次的 fallback 原因（原始原因最有价值）
-                    if fallback_reason.is_none() {
-                        fallback_reason = fb_reason;
-                    }
-
-                    fetch_status = status;
 
                     match &fetch_status {
                         FetchStatus::NetworkError { .. } if attempt < MAX_RETRIES => {
@@ -454,7 +432,7 @@ impl Fetcher {
                     pb.inc(1);
                 }
 
-                (original_repo, current_repo, result, moved_repo_name, restored_from_needauth, fallback_reason)
+                (original_repo, current_repo, result, moved_repo_name, restored_from_needauth)
             });
 
             futures.push(future);
@@ -468,7 +446,7 @@ impl Fetcher {
             match timeout(Duration::from_millis(200), futures.next()).await {
                 Ok(Some(join_result)) => {
                     match join_result {
-                        Ok((original_repo, current_repo, result_model, moved_name, restored, fallback_reason)) => {
+                        Ok((original_repo, current_repo, result_model, moved_name, restored)) => {
                             let moved = moved_name.is_some();
 
                             // 在移动 current_repo 之前收集已恢复仓库的名称
@@ -485,8 +463,8 @@ impl Fetcher {
                                 moved_to_needauth: moved,
                                 retry_count: result_model.retry_count,
                                 restored_from_needauth: restored,
-                                fallback_from_git2: fallback_reason.is_some(),
-                                fallback_reason,
+                                fallback_from_git2: false,
+                                fallback_reason: None,
                             };
 
                             // 收集已移动的仓库
@@ -512,21 +490,6 @@ impl Fetcher {
         // 进度条完成后，统一显示各类信息
         if let Some(pb) = main_pb {
             pb.finish_and_clear();
-        }
-        
-        // 显示 fallback 信息
-        let fallback_repos: Vec<_> = results.iter()
-            .filter(|r| r.fallback_from_git2)
-            .collect();
-        
-        if !fallback_repos.is_empty() {
-            println!("  ├─ {} 以下仓库从 git2 fallback 到原生 git 命令：", "ℹ".blue());
-            for (i, r) in fallback_repos.iter().enumerate() {
-                let is_last = i == fallback_repos.len() - 1;
-                let corner = if is_last { "└─" } else { "├─" };
-                let reason = r.fallback_reason.as_deref().unwrap_or("未知原因");
-                println!("  │   {} {}: {}", corner, r.current_repo.name.cyan(), reason.dimmed());
-            }
         }
         
         if !moved_repos.is_empty() {

@@ -75,7 +75,6 @@ impl FetchStatus {
 /// Git operations wrapper
 pub struct GitOps {
     proxy: ProxyConfig,
-    prefer_git_command: bool,
 }
 
 impl GitOps {
@@ -86,18 +85,12 @@ impl GitOps {
     pub fn new() -> Self {
         Self {
             proxy: ProxyConfig::default(),
-            prefer_git_command: false,
         }
     }
 
     /// Create instance with proxy
     pub fn with_proxy(proxy: ProxyConfig) -> Self {
-        Self { proxy, prefer_git_command: false }
-    }
-
-    /// Create instance with proxy and git command preference
-    pub fn with_proxy_and_preference(proxy: ProxyConfig, prefer_git_command: bool) -> Self {
-        Self { proxy, prefer_git_command }
+        Self { proxy }
     }
 
     /// Set proxy configuration
@@ -366,6 +359,7 @@ impl GitOps {
     /// 使用 git2 库执行 fetch（快速路径）
     ///
     /// 正常仓库在此路径下毫秒级成功，性能最优。
+    #[allow(dead_code)]
     fn fetch_with_git2(&self, path: &Path, timeout_secs: u64) -> FetchStatus {
         let repo = match Self::open(path) {
             Ok(r) => r,
@@ -526,42 +520,8 @@ impl GitOps {
     /// 2. 认证/404 错误直接返回（git 命令也会遇到同样问题）
     /// 3. NetworkError/OtherError/超时时 fallback 到 git 命令兜底
     pub fn fetch_detailed(&self, path: &Path, timeout_secs: u64) -> (FetchStatus, Option<String>) {
-        if self.prefer_git_command {
-            let status = self.fetch_with_git_command(path, timeout_secs);
-            return (status, Some("已知 git2 不适用，直接使用原生 git 命令".to_string()));
-        }
-
-        let (tx, rx) = std::sync::mpsc::channel();
-        let path_buf = path.to_path_buf();
-        let proxy = self.proxy.clone();
-
-        std::thread::spawn(move || {
-            let git_ops = GitOps::with_proxy(proxy);
-            let result = git_ops.fetch_with_git2(&path_buf, timeout_secs);
-            let _ = tx.send(result);
-        });
-
-        match rx.recv_timeout(std::time::Duration::from_secs(3)) {
-            Ok(FetchStatus::Success) => (FetchStatus::Success, None),
-            Ok(FetchStatus::AuthenticationRequired { message }) => {
-                (FetchStatus::AuthenticationRequired { message }, None)
-            }
-            Ok(FetchStatus::RepositoryNotFound { message }) => {
-                (FetchStatus::RepositoryNotFound { message }, None)
-            }
-            Ok(other) => {
-                let reason = format!("git2 fetch 失败: {}", other.error_message().as_deref().unwrap_or("unknown"));
-                let status = self.fetch_with_git_command(path, timeout_secs);
-                (status, Some(reason))
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                let status = self.fetch_with_git_command(path, timeout_secs);
-                (status, Some("git2 fetch 3s 内未返回".to_string()))
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                (FetchStatus::OtherError { message: "git2 fetch 线程异常退出".to_string() }, None)
-            }
-        }
+        let status = self.fetch_with_git_command(path, timeout_secs);
+        (status, None)
     }
 
     /// Classify error type
