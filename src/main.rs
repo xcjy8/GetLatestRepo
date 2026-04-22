@@ -207,7 +207,8 @@ async fn main() -> Result<std::process::ExitCode> {
         std::process::exit(0);
     }
 
-    Ok(std::process::ExitCode::from(exit_code as u8))
+    // 直接退出，避免 tokio runtime 因后台信号监听任务而无法结束
+    std::process::exit(exit_code)
 }
 
 /// 启动自检：修复路径已不存在的数据库记录，

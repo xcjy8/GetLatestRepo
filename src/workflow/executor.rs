@@ -445,9 +445,7 @@ impl WorkflowExecutor {
                                             }
                                         }
                                         
-                                        let cmd_connector = if info.conflict_files.is_empty() { "└─" } else { "└─" };
-                                        println!("        {} 恢复命令: git -C {} stash pop stash@{{index}}", 
-                                            cmd_connector, info.path);
+                                        println!("        └─ 恢复命令: git -C {} stash pop stash@{{index}}", info.path);
                                     }
                                 }
                                 if pull_result.failed_count > 0 {

@@ -75,6 +75,7 @@ impl FetchStatus {
 /// Git operations wrapper
 pub struct GitOps {
     proxy: ProxyConfig,
+    prefer_git_command: bool,
 }
 
 impl GitOps {
@@ -85,12 +86,18 @@ impl GitOps {
     pub fn new() -> Self {
         Self {
             proxy: ProxyConfig::default(),
+            prefer_git_command: false,
         }
     }
 
     /// Create instance with proxy
     pub fn with_proxy(proxy: ProxyConfig) -> Self {
-        Self { proxy }
+        Self { proxy, prefer_git_command: false }
+    }
+
+    /// Create instance with proxy and git command preference
+    pub fn with_proxy_and_preference(proxy: ProxyConfig, prefer_git_command: bool) -> Self {
+        Self { proxy, prefer_git_command }
     }
 
     /// Set proxy configuration
@@ -356,13 +363,14 @@ impl GitOps {
 
     /// Execute fetch and return detailed status
     /// 
-    /// Use git2 ProxyOptions to configure proxy per request,
-    /// avoiding global state pollution and concurrency safety issues from env::set_var.
-    pub fn fetch_detailed(&self, path: &Path, timeout_secs: u64) -> FetchStatus {
+    /// 使用 git2 库执行 fetch（快速路径）
+    ///
+    /// 正常仓库在此路径下毫秒级成功，性能最优。
+    fn fetch_with_git2(&self, path: &Path, timeout_secs: u64) -> FetchStatus {
         let repo = match Self::open(path) {
             Ok(r) => r,
-            Err(e) => return FetchStatus::OtherError { 
-                message: format!("Unable to open repository: {}", e) 
+            Err(e) => return FetchStatus::OtherError {
+                message: format!("无法打开仓库: {}", e)
             },
         };
 
@@ -371,52 +379,189 @@ impl GitOps {
             Err(_) => {
                 let remotes = match repo.remotes() {
                     Ok(r) => r,
-                    Err(e) => return FetchStatus::OtherError { 
-                        message: format!("Unable to get remote list: {}", e) 
+                    Err(e) => return FetchStatus::OtherError {
+                        message: format!("无法获取远程列表: {}", e)
                     },
                 };
                 let Some(first) = remotes.get(0) else {
-                    return FetchStatus::OtherError { 
-                        message: "No remote repository configured".to_string() 
+                    return FetchStatus::OtherError {
+                        message: "未配置远程仓库".to_string()
                     };
                 };
                 match repo.find_remote(first) {
                     Ok(r) => r,
-                    Err(e) => return FetchStatus::OtherError { 
-                        message: format!("Unable to find remote: {}", e) 
+                    Err(e) => return FetchStatus::OtherError {
+                        message: format!("无法找到远程: {}", e)
                     },
                 }
             }
         };
 
-        // Set timeout and callbacks
         let start = std::time::Instant::now();
         let mut callbacks = RemoteCallbacks::new();
         callbacks.sideband_progress(move |_data| {
-            // Return false to abort fetch if timeout exceeded
             start.elapsed() < std::time::Duration::from_secs(timeout_secs)
+        });
+
+        // 支持 SSH agent 和默认密钥，尽量对齐原生 git 的认证行为
+        callbacks.credentials(|_url, username_from_url, allowed_types| {
+            let username = username_from_url.unwrap_or("git");
+            if allowed_types.contains(git2::CredentialType::SSH_KEY) {
+                if let Ok(cred) = git2::Cred::ssh_key_from_agent(username) {
+                    return Ok(cred);
+                }
+                let home = dirs::home_dir();
+                for key_name in &["id_ed25519", "id_rsa", "id_ecdsa"] {
+                    if let Some(ref home) = home {
+                        let key_path = home.join(".ssh").join(key_name);
+                        if key_path.exists() {
+                            if let Ok(cred) = git2::Cred::ssh_key(username, None, &key_path, None) {
+                                return Ok(cred);
+                            }
+                        }
+                    }
+                }
+            }
+            if allowed_types.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+                return Err(git2::Error::from_str(
+                    "HTTPS 认证需要（git2 不支持 git credential-helper，请使用 SSH 或配置凭据）"
+                ));
+            }
+            Err(git2::Error::from_str("未找到合适的凭据"))
         });
 
         let mut fetch_opts = git2::FetchOptions::new();
         fetch_opts.remote_callbacks(callbacks);
-        
-        // Configure proxy options (per-request, no global state pollution)
+
         let mut proxy_opts = git2::ProxyOptions::new();
         if self.proxy.enabled {
-            // Use specified proxy URL
             proxy_opts.url(&self.proxy.http_proxy);
         } else {
-            // Don't disable proxy, let libgit2 use default behavior (may read from environment variables)
             proxy_opts.auto();
         }
         fetch_opts.proxy_options(proxy_opts);
 
-        // Execute fetch
         if let Err(e) = remote.fetch(&[] as &[&str], Some(&mut fetch_opts), None) {
-            return Self::classify_error(&e.to_string());
+            let error_msg = e.to_string();
+            return Self::classify_error(&error_msg);
         }
 
         FetchStatus::Success
+    }
+
+    /// 使用原生 git 命令执行 fetch（兜底路径）
+    ///
+    /// 当 git2 因认证、代理或网络配置问题失败时，使用原生 git 命令兜底。
+    /// 原生 git 会读取 ~/.ssh/config、使用 ssh-agent、支持 credential-helper，
+    /// 且可以通过 child.kill() 在超时后强制终止。
+    fn fetch_with_git_command(&self, path: &Path, timeout_secs: u64) -> FetchStatus {
+        let mut cmd = std::process::Command::new("git");
+        cmd.arg("-C").arg(path)
+            .args(["fetch", "origin"])
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_HTTP_LOW_SPEED_TIME", "10")
+            .env("GIT_HTTP_LOW_SPEED_LIMIT", "1000")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        // 使用环境变量传递代理，兼容旧版本 git（不支持 `git -c`）
+        if self.proxy.enabled {
+            cmd.env("HTTP_PROXY", &self.proxy.http_proxy)
+               .env("HTTPS_PROXY", &self.proxy.http_proxy)
+               .env("ALL_PROXY", &self.proxy.http_proxy);
+        }
+
+        let mut child = match cmd.spawn() {
+            Ok(child) => child,
+            Err(e) => {
+                return FetchStatus::OtherError {
+                    message: format!("无法启动 git fetch: {}", e),
+                };
+            }
+        };
+
+        let start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(timeout_secs);
+
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let mut stderr_buf = Vec::new();
+                    if let Some(mut err) = child.stderr.take() {
+                        let _ = std::io::Read::read_to_end(&mut err, &mut stderr_buf);
+                    }
+                    let stderr = String::from_utf8_lossy(&stderr_buf);
+
+                    if status.success() {
+                        return FetchStatus::Success;
+                    }
+
+                    let exit_code = status.code().unwrap_or(-1);
+                    let error_msg = format!("git fetch 失败 (exit {}): {}", exit_code, stderr.trim());
+                    return Self::classify_error(&error_msg);
+                }
+                Ok(None) => {
+                    if start.elapsed() >= timeout {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return FetchStatus::NetworkError {
+                            message: format!("Timeout ({}s)", timeout_secs),
+                        };
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                Err(e) => {
+                    return FetchStatus::OtherError {
+                        message: format!("等待 git fetch 失败: {}", e),
+                    };
+                }
+            }
+        }
+    }
+
+    /// 对外接口：先 git2 快速路径，失败或超时后 fallback 到 git 命令
+    ///
+    /// 策略：
+    /// 1. 绝大多数正常仓库在 git2 路径下毫秒级成功，性能无损
+    /// 2. 认证/404 错误直接返回（git 命令也会遇到同样问题）
+    /// 3. NetworkError/OtherError/超时时 fallback 到 git 命令兜底
+    pub fn fetch_detailed(&self, path: &Path, timeout_secs: u64) -> (FetchStatus, Option<String>) {
+        if self.prefer_git_command {
+            let status = self.fetch_with_git_command(path, timeout_secs);
+            return (status, Some("已知 git2 不适用，直接使用原生 git 命令".to_string()));
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path_buf = path.to_path_buf();
+        let proxy = self.proxy.clone();
+
+        std::thread::spawn(move || {
+            let git_ops = GitOps::with_proxy(proxy);
+            let result = git_ops.fetch_with_git2(&path_buf, timeout_secs);
+            let _ = tx.send(result);
+        });
+
+        match rx.recv_timeout(std::time::Duration::from_secs(3)) {
+            Ok(FetchStatus::Success) => (FetchStatus::Success, None),
+            Ok(FetchStatus::AuthenticationRequired { message }) => {
+                (FetchStatus::AuthenticationRequired { message }, None)
+            }
+            Ok(FetchStatus::RepositoryNotFound { message }) => {
+                (FetchStatus::RepositoryNotFound { message }, None)
+            }
+            Ok(other) => {
+                let reason = format!("git2 fetch 失败: {}", other.error_message().as_deref().unwrap_or("unknown"));
+                let status = self.fetch_with_git_command(path, timeout_secs);
+                (status, Some(reason))
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let status = self.fetch_with_git_command(path, timeout_secs);
+                (status, Some("git2 fetch 3s 内未返回".to_string()))
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                (FetchStatus::OtherError { message: "git2 fetch 线程异常退出".to_string() }, None)
+            }
+        }
     }
 
     /// Classify error type
@@ -441,9 +586,13 @@ impl GitOps {
         }
         
         // Network/timeout errors
+        // Includes patterns from both git2 and native `git fetch` (curl/libcurl)
         if msg.contains("timeout") || msg.contains("timed out") ||
            msg.contains("connection refused") || msg.contains("couldn't connect") ||
-           msg.contains("network") || msg.contains("unreachable") {
+           msg.contains("network") || msg.contains("unreachable") ||
+           msg.contains("unable to access") || msg.contains("rpc failed") ||
+           msg.contains("curl") || msg.contains("openssl") ||
+           msg.contains("operation timed out") || msg.contains("failed to connect") {
             return FetchStatus::NetworkError { 
                 message: error_msg.to_string() 
             };
@@ -460,7 +609,7 @@ impl GitOps {
     /// Currently unused, prefer using `fetch_detailed` for detailed results
     #[allow(dead_code)]
     pub fn fetch(&self, path: &Path, timeout_secs: u64) -> Result<bool> {
-        match self.fetch_detailed(path, timeout_secs) {
+        match self.fetch_detailed(path, timeout_secs).0 {
             FetchStatus::Success => Ok(true),
             _ => Ok(false),
         }

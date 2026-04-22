@@ -2,6 +2,57 @@
 
 ---
 
+## [0.1.4] - 2026-04-22
+
+> fetch 双层架构、进度条精简与 git2 偏好缓存
+
+### Added
+
+**fetch 双层架构（git2 快速路径 + 原生 git 命令兜底）**
+
+- `git.rs`: `fetch_detailed` 改为三层策略
+  1. 若仓库已在 `git2_fallback_cache` 中，直接走原生 `git fetch`
+  2. 否则启动 git2 fetch，3 秒超时监控
+  3. git2 失败/超时时 fallback 到 `fetch_with_git_command`
+- `git.rs`: 新增 `fetch_with_git_command`，使用 `std::process::Command` 执行 `git fetch origin`
+  - 支持 `child.kill()` 强制终止，避免 git2 无法中断的问题
+  - 代理通过环境变量 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 传递，兼容旧版本 git
+  - 设置 `GIT_TERMINAL_PROMPT=0` 防止交互式阻塞
+- `git.rs`: `FetchStatus` 统一错误分类（`classify_error`），兼容 git2 和原生 git 的错误文本
+
+**git2 偏好缓存**
+
+- `fetcher.rs`: `Fetcher` 新增 `git2_fallback_cache: Arc<Mutex<HashSet<String>>>`
+- 只要某仓库发生过 git2 → git 命令的 fallback，路径即写入缓存
+- 下次 fetch 同一仓库时直接跳过 git2，避免重复浪费 3 秒超时等待
+- 缓存为进程级（随 `Fetcher` 实例生命周期），不持久化到数据库
+
+### Changed
+
+**进度条与输出排版**
+
+- `fetcher.rs`: 去掉 `MultiProgress`，改用单个 `ProgressBar`
+- `fetcher.rs`: fetch 过程中不再穿插任何 `pb.println` 输出，进度条保持干净
+- `fetcher.rs`: 所有 fallback / 失败 / 移动 / 恢复信息在进度条 `finish_and_clear()` 后统一树形输出
+- `fetcher.rs`: fallback 汇总指明具体仓库名和原始原因（如 `"git2 fetch 3s 内未返回"`）
+
+**进程优雅关闭**
+
+- `main.rs`: 末尾从 `Ok(ExitCode::from(exit_code))` 改为直接 `std::process::exit(exit_code)`
+- `signal_handler.rs`: 补充注释，说明后台 `tokio::spawn` 的 `ctrl_c()` 监听任务会导致 tokio runtime 在 main 返回后无法退出
+
+**代理兼容性**
+
+- `git.rs`: 原生 git 命令路径不再使用 `git -c http.proxy=`（旧版本 git 不支持），改用环境变量传递代理
+
+### Fixed
+
+- `fetcher.rs`: 修复 `fallback_reason` 在重试时可能丢失的问题，始终保留第一次的原始 fallback 原因
+- `fetcher.rs`: 修复缓存策略过保守的问题，fallback 发生后即写入缓存（不限于成功时）
+- `workflow/executor.rs`: 修复 pull-force 冲突恢复命令的树形输出格式
+
+---
+
 ## [0.1.3] - 2026-04-21
 
 > package.sh 新增打包脚本

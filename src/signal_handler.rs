@@ -2,10 +2,15 @@
 //!
 //! 提供三层优雅关闭策略：
 //! 1. 在长循环中密集检查关闭标志（fetcher、executor、concurrent）
-//! 2. main 函数末尾若标志已设置，自动执行 `process::exit(0)`
+//! 2. main 函数末尾直接执行 `process::exit()`，避免 tokio runtime 因本后台任务而无法退出
 //! 3. 10 秒强制退出兜底 + 第二次 Ctrl+C 立即退出
 //!
 //! 保证：用户在对 1000 个仓库执行 fetch 时按 Ctrl+C 也不会卡住。
+//!
+//! ⚠️ 注意：本模块通过 `tokio::spawn` 启动的后台任务会无限期等待 `ctrl_c()`。
+//! 若 main 正常返回 `ExitCode` 而不调用 `process::exit()`，tokio runtime 将进入 shutdown
+//! 并等待本任务完成，导致进程在程序结束后无法退出（此时再按 Ctrl+C 也可能因 runtime
+//! 处于关闭状态而无法被正确处理）。因此 `main.rs` 末尾必须直接 `process::exit()`。
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
