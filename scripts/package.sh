@@ -20,8 +20,8 @@ CLR_DIM=$'\033[2m'
 # ═══════════════════════════════════════════════════
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SOURCE_BIN="${PROJECT_ROOT}/target/release/getlatestrepo"
-TARGET_DIR="/Users/sy/aibin"
-TARGET_BIN="${TARGET_DIR}/getlatestrepo"
+TARGET_DIR="/Users/sy/local-bin"
+TARGET_BIN="${TARGET_DIR}/custom-getlatestrepo"
 
 # ═══════════════════════════════════════════════════
 # 辅助函数
