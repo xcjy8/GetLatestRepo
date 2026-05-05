@@ -44,7 +44,7 @@ pub async fn execute(
     }
 
     // Scan repositories
-    let repos = Scanner::scan_all(&sources, &db, true).await?;
+    let repos = Scanner::scan_all(&sources, &db, true, jobs).await?;
 
     if repos.is_empty() {
         println!("{} No Git repositories found", "!".yellow());

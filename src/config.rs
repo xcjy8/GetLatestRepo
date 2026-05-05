@@ -202,20 +202,5 @@ impl AppConfig {
     pub fn is_initialized(&self) -> bool {
         !self.scan_sources.is_empty()
     }
-
-    /// Get first scan source (for simplified scenarios)
-    /// 
-    /// Currently unused, reserved for future single-source operation API
-    #[allow(dead_code)]
-    pub fn first_source(&self) -> Option<&ScanSource> {
-        self.scan_sources.first()
-    }
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_config_save_load() {
-        // Mocking config directory needed, skipping for now
-    }
-}

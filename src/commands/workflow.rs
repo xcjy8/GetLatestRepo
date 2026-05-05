@@ -73,11 +73,10 @@ pub async fn execute(
         .with_security_check(!no_security_check)
         .with_pull_safety_check(!no_pull_guard); // Enabled repo-deletion detection by default
 
-    if let Some(proxy) = proxy_config {
-        if proxy.enabled {
+    if let Some(proxy) = proxy_config
+        && proxy.enabled {
             executor = executor.with_proxy(proxy);
         }
-    }
 
     let result = executor.execute().await?;
 

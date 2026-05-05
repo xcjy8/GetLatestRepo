@@ -33,18 +33,6 @@ impl Freshness {
         }
     }
 
-    /// Get status label (for internal identification)
-    /// 
-    /// Currently unused, reserved for future CLI filtering functionality
-    #[allow(dead_code)]
-    pub fn label(&self) -> &'static str {
-        match self {
-            Freshness::HasUpdates => "behind",
-            Freshness::Synced => "ok",
-            Freshness::Unreachable => "error",
-            Freshness::NoRemote => "no remote",
-        }
-    }
 }
 
 impl From<&str> for Freshness {
@@ -92,7 +80,7 @@ pub struct Repository {
     pub path: String,
     pub root_path: String,
     pub name: String,
-    pub depth: i32,
+    pub depth: u32,
     
     // Git Status
     pub branch: Option<String>,
@@ -123,12 +111,17 @@ pub struct Repository {
 impl Repository {
     /// Create repository instance with new path (for needauth move scenario)
     /// 
-    /// Reuse all other fields, only update path-related info
+    /// Reuse all other fields, only update path-related info.
+    /// Depth is recalculated based on new_path relative to new_root_path.
     pub fn with_new_path(self, new_path: String, new_root_path: String) -> Self {
+        let depth = std::path::Path::new(&new_path)
+            .strip_prefix(&new_root_path)
+            .map(|p| p.components().count() as u32)
+            .unwrap_or(0);
         Self {
             path: new_path,
             root_path: new_root_path,
-            depth: 0, // repository depth in needauth is 0
+            depth,
             ..self
         }
     }
@@ -148,6 +141,33 @@ impl Repository {
             format!("{} staged", staged)
         } else {
             format!("{} unstaged", unstaged)
+        }
+    }
+}
+
+impl Default for Repository {
+    fn default() -> Self {
+        Self {
+            id: None,
+            path: String::new(),
+            root_path: String::new(),
+            name: String::new(),
+            depth: 0,
+            branch: None,
+            dirty: false,
+            file_changes: Vec::new(),
+            dirty_files: Vec::new(),
+            upstream_ref: None,
+            upstream_url: None,
+            ahead_count: 0,
+            behind_count: 0,
+            freshness: Freshness::Synced,
+            last_commit_at: None,
+            last_commit_message: None,
+            last_commit_author: None,
+            last_scanned_at: None,
+            last_fetch_at: None,
+            last_pull_at: None,
         }
     }
 }
@@ -273,16 +293,4 @@ impl FileChange {
             }
         }
     }
-}
-
-/// Diff content
-/// 
-/// Currently unused, reserved for future diff display functionality
-#[derive(Debug, Clone, Serialize)]
-#[allow(dead_code)]
-pub struct DiffInfo {
-    pub file_path: String,
-    pub old_path: Option<String>,
-    pub status: String,
-    pub diff_content: String,
 }

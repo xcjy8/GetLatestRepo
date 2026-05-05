@@ -18,6 +18,7 @@ impl Scanner {
         source: &ScanSource,
         db: &Database,
         progress: bool,
+        jobs: usize,
     ) -> Result<Vec<Repository>> {
         let root = Path::new(&source.root_path);
 
@@ -49,7 +50,7 @@ impl Scanner {
         // - Auto-handle panics (won't cause hung)
         // - Uses blocking wait (no busy-wait)
         // - Reasonable timeout (5 seconds)
-        const MAX_CONCURRENT: usize = crate::utils::DEFAULT_MAX_CONCURRENT_SCAN;
+        let max_concurrent = jobs.clamp(1, 100);
         
         // Build task list
         let tasks: Vec<_> = git_dirs
@@ -64,19 +65,17 @@ impl Scanner {
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_default();
                     
-                    if let Some(ref bar) = pb {
-                        if let Ok(bar) = bar.lock() {
+                    if let Some(ref bar) = pb
+                        && let Ok(bar) = bar.lock() {
                             bar.set_message(format!("Scan {}", repo_name));
                         }
-                    }
 
                     let result = GitOps::inspect(&repo_path, &root_path);
 
-                    if let Some(ref bar) = pb {
-                        if let Ok(bar) = bar.lock() {
+                    if let Some(ref bar) = pb
+                        && let Ok(bar) = bar.lock() {
                             bar.inc(1);
                         }
-                    }
 
                     result.map_err(|e| e.to_string())
                 }
@@ -84,7 +83,7 @@ impl Scanner {
             .collect();
 
         // Execute concurrent tasks
-        let results = execute_concurrent_raw(tasks, MAX_CONCURRENT);
+        let results = execute_concurrent_raw(tasks, max_concurrent);
         
         let mut repos = Vec::new();
         let mut errors = Vec::new();
@@ -97,11 +96,10 @@ impl Scanner {
             }
         }
 
-        if let Some(ref bar) = pb {
-            if let Ok(bar) = bar.lock() {
+        if let Some(ref bar) = pb
+            && let Ok(bar) = bar.lock() {
                 bar.finish_with_message("Scan complete");
             }
-        }
 
         // Display errors
         for err in &errors {
@@ -216,6 +214,7 @@ impl Scanner {
         sources: &[ScanSource],
         db: &Database,
         progress: bool,
+        jobs: usize,
     ) -> Result<Vec<Repository>> {
         let mut all_repos = Vec::new();
 
@@ -228,7 +227,7 @@ impl Scanner {
                 println!("\n📁 Scan: {}", source.root_path);
             }
 
-            match Self::scan_source(source, db, progress).await {
+            match Self::scan_source(source, db, progress, jobs).await {
                 Ok(mut repos) => {
                     all_repos.append(&mut repos);
                 }
@@ -239,13 +238,5 @@ impl Scanner {
         }
 
         Ok(all_repos)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_find_git_dirs() {
-        // Test directory found logic
     }
 }

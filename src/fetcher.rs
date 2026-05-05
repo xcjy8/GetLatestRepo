@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use futures::stream::{FuturesUnordered, StreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -32,12 +33,6 @@ pub struct FetchExecutionResult {
     pub retry_count: u32,
     /// Whether restored from needauth (auth issue resolved)
     pub restored_from_needauth: bool,
-    #[allow(dead_code)]
-    /// Whether this fetch fell back from git2 to native git command (保留字段，当前不再使用)
-    pub fallback_from_git2: bool,
-    #[allow(dead_code)]
-    /// Reason for fallback (None if git2 succeeded directly) (保留字段，当前不再使用)
-    pub fallback_reason: Option<String>,
 }
 
 impl FetchExecutionResult {
@@ -45,15 +40,7 @@ impl FetchExecutionResult {
     pub fn db_path(&self) -> &str {
         &self.current_repo.path
     }
-    
-    /// Get original path
-    /// 
-    /// Currently unused, reserved for future debugging and audit functionality
-    #[allow(dead_code)]
-    pub fn original_path(&self) -> &str {
-        &self.original_repo.path
-    }
-    
+
     /// Convert to FetchResultModel (for reporting)
     pub fn to_model(&self) -> FetchResultModel {
         FetchResultModel {
@@ -95,15 +82,6 @@ impl Fetcher {
         self
     }
 
-    /// Set whether to auto-skip high-risk repositories (no interactive confirmation)
-    /// 
-    /// Currently unused, reserved for future non-interactive mode
-    #[allow(dead_code)]
-    pub fn with_auto_skip_high_risk(mut self, skip: bool) -> Self {
-        self.auto_skip_high_risk = skip;
-        self
-    }
-
     pub fn with_proxy(mut self, proxy: ProxyConfig) -> Self {
         self.proxy = proxy;
         self
@@ -120,18 +98,135 @@ impl Fetcher {
         self
     }
 
+    /// Concurrent security scan for all repositories (no stdin interaction)
+    ///
+    /// Returns a set of repo paths that were flagged as high-risk by the security scanner.
+    /// These repos need user confirmation before fetch can proceed.
+    async fn prescan_security_batch(&self, repos: &[Repository]) -> HashSet<String> {
+        if !self.security_scan {
+            return HashSet::new();
+        }
+
+        let semaphore = Arc::new(Semaphore::new(self.concurrency));
+        let mut futures = FuturesUnordered::new();
+        let mut risky_paths = HashSet::new();
+
+        for repo in repos {
+            let path_str = repo.path.clone();
+            let path = std::path::PathBuf::from(&path_str);
+            let repo_name = repo.name.clone();
+            let timeout_secs = self.timeout_secs;
+            let permit = Arc::clone(&semaphore);
+
+            if !path.exists() {
+                continue;
+            }
+
+            let future = tokio::spawn(async move {
+                // SAFETY: semaphore is owned by this function and never closed
+                let _permit = permit.acquire().await.expect("semaphore");
+                let repo_name_for_err = repo_name.clone();
+                let scan_result = match timeout(
+                    Duration::from_secs(timeout_secs),
+                    tokio::task::spawn_blocking(move || {
+                        Self::scan_repository(&path, &repo_name)
+                    })
+                ).await {
+                    Ok(Ok(Ok(r))) => r,
+                    // Scan failed (timeout/error/panic) — treat as risky (fail-closed)
+                    _ => {
+                        eprintln!("  ⚠️ Security scan failed for '{}', treating as high-risk", repo_name_for_err);
+                        return Some((path_str, String::new()));
+                    }
+                };
+
+                if !scan_result.0 {
+                    Some((path_str, scan_result.1))
+                } else {
+                    None
+                }
+            });
+            futures.push(future);
+        }
+
+        while let Some(result) = futures.next().await {
+            if let Ok(Some((path, report))) = result {
+                if !report.is_empty() {
+                    eprintln!("\n{}", report);
+                }
+                risky_paths.insert(path);
+            }
+        }
+
+        risky_paths
+    }
+
+    /// Confirm high-risk repositories with the user (single-threaded stdin access)
+    ///
+    /// For each risky repo, prompt the user for confirmation. Returns a set of repo paths
+    /// that the user rejected (should be skipped during fetch).
+    fn confirm_risky_repos(repos: &[Repository], risky_paths: &HashSet<String>) -> HashSet<String> {
+        use std::io::{IsTerminal, Write};
+
+        let mut rejected = HashSet::new();
+
+        if risky_paths.is_empty() {
+            return rejected;
+        }
+
+        // Check if stdin is a TTY
+        if !std::io::stdin().is_terminal() {
+            eprintln!("Warning: stdin is not a TTY, defaulting to reject all risky repositories");
+            return risky_paths.clone();
+        }
+
+        for repo in repos {
+            if !risky_paths.contains(&repo.path) {
+                continue;
+            }
+
+            eprint!("Continue fetch '{}'? [y/N] ", repo.name);
+            let _ = std::io::stdout().flush();
+
+            let mut input = String::new();
+            match std::io::stdin().read_line(&mut input) {
+                Ok(_) if input.trim().eq_ignore_ascii_case("y") => {
+                    // User confirmed, proceed with fetch
+                }
+                _ => {
+                    rejected.insert(repo.path.clone());
+                }
+            }
+        }
+
+        rejected
+    }
+
     /// Batch fetch all repositories (with security scan and needauth handling)
     ///
     /// Return detailed execution result for each repository, including path change info.
     /// Does not directly operate on database — caller is responsible for persistence.
+    ///
+    /// Security scan is performed in two phases to avoid stdin race conditions:
+    /// 1. Concurrent scan: check all repos for security risks (no stdin)
+    /// 2. Sequential confirm: prompt user for each risky repo (single-threaded stdin)
     pub async fn fetch_all_detailed(&self, repos: &[Repository], progress: bool) -> Vec<FetchExecutionResult> {
+        // Phase 1: Concurrent security scan (no stdin interaction)
+        let rejected_paths = if self.security_scan && !self.auto_skip_high_risk {
+            let risky_paths = self.prescan_security_batch(repos).await;
+            Self::confirm_risky_repos(repos, &risky_paths)
+        } else {
+            HashSet::new()
+        };
+
+        // Phase 2: Concurrent fetch (skip rejected repos)
         let semaphore = Arc::new(Semaphore::new(self.concurrency));
         let main_pb = if progress {
             let pb = ProgressBar::new(repos.len() as u64);
             pb.set_style(
                 ProgressStyle::default_bar()
                     .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-                    .expect("进度条模板格式错误，这是硬编码常量，不应失败")
+                    .expect("hardcoded template")
                     .progress_chars("#>-"),
             );
             Some(pb)
@@ -142,7 +237,16 @@ impl Fetcher {
         let mut futures = FuturesUnordered::new();
 
         for repo in repos {
-            // 若收到关闭请求，跳过生成新任务
+            // Skip shutdown and rejected repos
+            if crate::signal_handler::is_shutdown_requested() {
+                break;
+            }
+            if rejected_paths.contains(&repo.path) {
+                if let Some(ref pb) = main_pb {
+                    pb.inc(1);
+                }
+                continue;
+            }
             if crate::signal_handler::is_shutdown_requested() {
                 break;
             }
@@ -152,108 +256,32 @@ impl Fetcher {
             let timeout_secs = self.timeout_secs;
             let main_pb = main_pb.clone();
             let proxy = self.proxy.clone();
-            let security_scan = self.security_scan;
-            let auto_skip = self.auto_skip_high_risk;
             let move_to_needauth = self.move_to_needauth;
 
             let future = tokio::spawn(async move {
-                let _permit = permit.acquire().await.expect("Semaphore should not be closed");
+                // SAFETY: semaphore is owned by this function and never closed
+                let _permit = permit.acquire().await.expect("semaphore");
                 let start = Instant::now();
                 let original_repo = repo.clone();
                 let original_path = repo.path.clone();
                 let repo_name = repo.name.clone();
-                
+
                 if let Some(ref pb) = main_pb {
                     pb.set_message(repo_name.clone());
                 }
 
-                // 1. Security scan (only if the path exists)
-                let repo_path_for_scan = original_path.clone();
-                if security_scan {
-                    let path = std::path::Path::new(&repo_path_for_scan);
-                    
-                    // Check if the path exists (handle cases moved to needauth but directory deleted)
-                    if !path.exists() {
-                        let path_str = original_path.clone();
-                        return (original_repo, repo, FetchResultModel {
-                            repo_path: path_str.clone(),
-                            success: false,
-                            error: Some(format!("Repository path does not exist: {}", path_str)),
-                            duration_ms: start.elapsed().as_millis() as u64,
-                            retry_count: 0,
-                        }, None, false);
-                    }
-                    
-                    let path_buf = path.to_path_buf();
-                    let repo_name = repo.name.clone();
-                    let scan_result = match timeout(
-                        Duration::from_secs(timeout_secs),
-                        tokio::task::spawn_blocking(move || {
-                            Self::scan_repository(&path_buf, &repo_name)
-                        })
-                    ).await {
-                        Ok(Ok(Ok(r))) => Ok(r),
-                        Ok(Ok(Err(e))) => Err(e),
-                        Ok(Err(_)) => Err(anyhow::anyhow!("Security scan task panicked")),
-                        Err(_) => Err(anyhow::anyhow!("Security scan timed out ({}s)", timeout_secs)),
-                    };
-                    
-                    match scan_result {
-                        Ok((is_safe, report)) => {
-                            if !is_safe {
-                                let error_msg = if auto_skip {
-                                    "Security scan failed, skipped".to_string()
-                                } else {
-                                    "User cancelled (security reason)".to_string()
-                                };
-                                
-                                if !auto_skip {
-                                    if !report.is_empty() {
-                                        eprintln!("\n{}", report);
-                                    }
-                                    eprint!("Continue fetch '{}'? [y/N] ", repo.name);
-                                    
-                                    let confirmed: bool = tokio::task::spawn_blocking(|| {
-                                        use std::io::{IsTerminal, Write};
-                                        if !std::io::stdin().is_terminal() {
-                                            eprintln!("Warning: stdin is not a TTY, defaulting to 'no' for security confirmation");
-                                            return false;
-                                        }
-                                        let _ = std::io::stdout().flush();
-                                        let mut input = String::new();
-                                        match std::io::stdin().read_line(&mut input) {
-                                            Ok(_) => input.trim().eq_ignore_ascii_case("y"),
-                                            Err(_) => false,
-                                        }
-                                    }).await.unwrap_or_default();
-                                    
-                                    if !confirmed {
-                                        return (original_repo, repo, FetchResultModel {
-                                            repo_path: original_path,
-                                            success: false,
-                                            error: Some(error_msg),
-                                            duration_ms: start.elapsed().as_millis() as u64,
-                                            retry_count: 0,
-                                        }, None, false);
-                                    }
-                                } else {
-                                    return (original_repo, repo, FetchResultModel {
-                                        repo_path: original_path,
-                                        success: false,
-                                        error: Some(error_msg),
-                                        duration_ms: start.elapsed().as_millis() as u64,
-                                        retry_count: 0,
-                                    }, None, false);
-                                }
-                            }
-                        }
-                        Err(_e) => {
-                            // Security scan failures are only logged; they don't interrupt the flow
-                        }
-                    }
+                // Check if path exists before fetch
+                if !std::path::Path::new(&original_path).exists() {
+                    return (original_repo, repo, FetchResultModel {
+                        repo_path: original_path.clone(),
+                        success: false,
+                        error: Some(format!("Repository path does not exist: {}", original_path)),
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        retry_count: 0,
+                    }, None, false);
                 }
 
-                // 2. Execute the fetch with exponential backoff retry for NetworkError
+                // Execute fetch with exponential backoff retry for NetworkError
                 let path = std::path::PathBuf::from(&original_path);
                 let repo_path = original_path.clone();
                 let repo_name = repo.name.clone();
@@ -301,6 +329,11 @@ impl Fetcher {
                         FetchStatus::NetworkError { .. } if attempt < MAX_RETRIES => {
                             let delay_secs = 2u64.pow(attempt);
                             let delay = std::cmp::min(Duration::from_secs(delay_secs), remaining.saturating_sub(Duration::from_millis(100)));
+                            // Ensure minimum 100ms delay to avoid zero-backoff spin
+                            let delay = std::cmp::max(delay, Duration::from_millis(100));
+                            if remaining < Duration::from_millis(200) {
+                                break; // Not enough time remaining for a meaningful retry
+                            }
                             tokio::time::sleep(delay).await;
                             retry_count = attempt + 1;
                         }
@@ -336,7 +369,14 @@ impl Fetcher {
                             let final_name = final_path.file_name()
                                 .map(|n| n.to_string_lossy().to_string())
                                 .unwrap_or_else(|| repo_name.clone());
-                            
+
+                            // Write sidecar file preserving original relative path for accurate restore
+                            let original_relative = std::path::Path::new(&original_path)
+                                .strip_prefix(&root_path)
+                                .unwrap_or(std::path::Path::new(&repo_name));
+                            let sidecar_path = final_path.join(".needauth_original_path");
+                            let _ = std::fs::write(&sidecar_path, original_relative.to_string_lossy().as_bytes());
+
                             let mut new_repo = repo.with_new_path(new_repo_path, new_root_path);
                             let name_for_result = final_name.clone();
                             new_repo.name = final_name;
@@ -363,15 +403,22 @@ impl Fetcher {
                         }
                     }
                 } else if matches!(fetch_status, FetchStatus::Success) && original_path.contains(crate::utils::NEEDAUTH_DIR) {
-                    // NOTE: Design limitation — this assumes the original repository was a direct child
-                    // of the scan root. If the repo was originally at `<root>/sub/myrepo`, recovery will
-                    // move it to `<root>/myrepo` instead. Preserving the full relative path would require
-                    // storing it in the database (schema change).
-                    let needauth_parent = std::path::Path::new(&original_path).parent()
-                        .and_then(|p| p.parent())
+                    // Restore path: prefer sidecar file (.needauth_original_path) for accurate
+                    // nested path restoration; fall back to direct-child assumption for legacy entries.
+                    let sidecar_path = std::path::Path::new(&original_path).join(".needauth_original_path");
+                    let original_repo_path = if let Ok(relative) = std::fs::read_to_string(&sidecar_path) {
+                        let relative = relative.trim();
+                        std::path::PathBuf::from(&root_path).join(relative)
+                    } else {
+                        let needauth_parent = std::path::Path::new(&original_path).parent()
+                            .and_then(|p| p.parent())
+                            .map(|p| p.to_path_buf())
+                            .unwrap_or_else(|| std::path::PathBuf::from(&root_path));
+                        needauth_parent.join(&repo_name)
+                    };
+                    let needauth_parent = original_repo_path.parent()
                         .map(|p| p.to_path_buf())
                         .unwrap_or_else(|| std::path::PathBuf::from(&root_path));
-                    let original_repo_path = needauth_parent.join(&repo_name);
                     
                     let from_path = original_path.clone();
                     let upstream = repo.upstream_url.clone();
@@ -396,7 +443,10 @@ impl Fetcher {
                                 .unwrap_or_else(|| needauth_parent.to_string_lossy().to_string());
                             let mut restored_repo = repo.with_new_path(new_path, new_root);
                             restored_repo.name = repo_name.clone();
-                            
+
+                            // Clean up sidecar file after successful restore
+                            let _ = std::fs::remove_file(restored_path.join(".needauth_original_path"));
+
                             let result = FetchResultModel {
                                 repo_path: restored_repo.path.clone(),
                                 success: true,
@@ -463,8 +513,6 @@ impl Fetcher {
                                 moved_to_needauth: moved,
                                 retry_count: result_model.retry_count,
                                 restored_from_needauth: restored,
-                                fallback_from_git2: false,
-                                fallback_reason: None,
                             };
 
                             // 收集已移动的仓库
@@ -474,13 +522,29 @@ impl Fetcher {
 
                             results.push(exec_result);
                         }
-                        Err(e) => eprintln!("  │   {} Task exception: {}", "⚠️".yellow(), e),
+                        Err(e) => {
+                            eprintln!("  │   {} Task exception: {}", "⚠️".yellow(), e);
+                            // Create a failure result so the repo isn't silently lost
+                            results.push(FetchExecutionResult {
+                                original_repo: Repository::default(),
+                                current_repo: Repository::default(),
+                                success: false,
+                                error: Some(format!("Task panicked: {}", e)),
+                                duration_ms: 0,
+                                moved_to_needauth: false,
+                                retry_count: 0,
+                                restored_from_needauth: false,
+                            });
+                            if let Some(ref pb) = main_pb {
+                                pb.inc(1);
+                            }
+                        }
                     }
                 }
                 Ok(None) => break,
                 Err(_) => {
                     if crate::signal_handler::is_shutdown_requested() {
-                        eprintln!("  ⚠️  收到中断信号，取消等待剩余任务");
+                        eprintln!("  ⚠️  Interrupt received, cancelling remaining tasks");
                         break;
                     }
                 }
@@ -511,17 +575,6 @@ impl Fetcher {
         }
 
         results
-    }
-    
-    /// Batch fetch all repositories (legacy interface returning simplified results)
-    ///
-    /// Currently unused, reserved for future scenarios needing simplified results
-    #[allow(dead_code)]
-    pub async fn fetch_all(&self, repos: &[Repository], progress: bool) -> Vec<FetchResultModel> {
-        self.fetch_all_detailed(repos, progress).await
-            .into_iter()
-            .map(|r| r.to_model())
-            .collect()
     }
 
     /// Move repository to needauth directory
@@ -668,14 +721,13 @@ impl Fetcher {
         // Execute move
         if let Err(e) = fs::rename(from, &final_to) {
             // If move fails, try to restore original target from temp
-            if !tmp_path.as_os_str().is_empty() {
-                if let Err(restore_err) = fs::rename(&tmp_path, &final_to) {
+            if !tmp_path.as_os_str().is_empty()
+                && let Err(restore_err) = fs::rename(&tmp_path, &final_to) {
                     return Err(anyhow::anyhow!(
                         "CRITICAL: Unable to move repository to '{}': {}. Additionally, restoring the original target from temp '{}' failed: {}. Original data may be at '{}'.",
                         final_to.display(), e, tmp_path.display(), restore_err, tmp_path.display()
                     ));
                 }
-            }
             return Err(anyhow::anyhow!(
                 "Unable to move repository to '{}': {}",
                 final_to.display(),
@@ -684,15 +736,14 @@ impl Fetcher {
         }
 
         // Clean up temp directory (failure is not an error, as this is best-effort cleanup)
-        if !tmp_path.as_os_str().is_empty() {
-            if let Err(e) = fs::remove_dir_all(&tmp_path) {
+        if !tmp_path.as_os_str().is_empty()
+            && let Err(e) = fs::remove_dir_all(&tmp_path) {
                 eprintln!(
                     "Warning: unable to clean up temp directory '{}': {}. Please delete it manually.",
                     tmp_path.display(),
                     e
                 );
             }
-        }
 
         Ok(final_to)
     }
@@ -773,10 +824,15 @@ impl Fetcher {
             let target_url = Self::get_repo_remote_url(to);
             if target_url.is_some() && upstream_url.is_some() && target_url.as_deref() == upstream_url {
                 // Same repository already exists at target — user likely re-cloned it
-                return Err(anyhow::anyhow!(
-                    "Target path '{}' already contains the same repository, skipping restore",
-                    to.display()
-                ));
+                // Clean up the needauth copy and return Ok so the caller updates the DB path
+                if from_path.exists()
+                    && let Err(e) = std::fs::remove_dir_all(from_path) {
+                        return Err(anyhow::anyhow!(
+                            "Failed to clean up needauth copy at '{}' after detecting duplicate at target: {}",
+                            from_path.display(), e
+                        ));
+                    }
+                return Ok(to.to_path_buf());
             } else if to.join(".git").exists() {
                 // Different repository exists at target — don't overwrite
                 return Err(anyhow::anyhow!(
@@ -848,13 +904,17 @@ impl Fetcher {
             return base;
         }
         for i in 1u32.. {
-            let candidate = target.with_extension(format!("getlatestrepo_swap.{}", i));
+            let mut candidate = base.as_os_str().to_os_string();
+            candidate.push(format!(".{}", i));
+            let candidate = std::path::PathBuf::from(candidate);
             if !candidate.exists() {
                 return candidate;
             }
         }
         // Theoretically unreachable
-        target.with_extension(format!("getlatestrepo_swap.{}", std::process::id()))
+        let mut fallback = base.as_os_str().to_os_string();
+        fallback.push(format!(".{}", std::process::id()));
+        std::path::PathBuf::from(fallback)
     }
 
     /// Scan single repository's security
@@ -912,15 +972,16 @@ impl Fetcher {
 
         summary.results = exec_results.iter().map(|r| r.to_model()).collect();
 
-        // DB operations in blocking task to avoid blocking the async runtime
-        tokio::task::spawn_blocking(move || {
-            let db = Database::open()?;
+        // Opens its own DB connection because Database is not Send + 'static.
+        // DB failures are logged but don't abort the batch — fetch results are still valid.
+        let db_result = tokio::task::spawn_blocking(move || -> Result<()> {
+            let db = Database::open()
+                .map_err(|e| { eprintln!("Failed to open database for fetch update: {}", e); e })?;
             for exec_result in exec_results {
-                if exec_result.success {
-                    if let Err(e) = db.update_fetch_time(exec_result.db_path()) {
+                if exec_result.success
+                    && let Err(e) = db.update_fetch_time(exec_result.db_path()) {
                         eprintln!("Update fetch time failed '{}': {}", crate::utils::sanitize_path(exec_result.db_path()), e);
                     }
-                }
                 // If the repository was moved to need-auth, atomically update the database
                 if exec_result.moved_to_needauth {
                     let mut moved_repo = exec_result.current_repo.clone();
@@ -936,8 +997,15 @@ impl Fetcher {
                     }
                 }
             }
-            Ok::<_, anyhow::Error>(())
-        }).await??;
+            Ok(())
+        }).await;
+
+        // DB update failures are non-fatal — fetch results are already captured in summary
+        match db_result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => eprintln!("Warning: database update after fetch had errors: {}", e),
+            Err(e) => eprintln!("Warning: database update task failed: {}", e),
+        }
 
         Ok(summary)
     }
@@ -966,7 +1034,7 @@ impl Fetcher {
         
         for repo in repos {
             if crate::signal_handler::is_shutdown_requested() {
-                eprintln!("  ⚠️  收到中断信号，跳过后续仓库扫描");
+                eprintln!("  ⚠️  Interrupt received, skipping remaining repo scans");
                 break;
             }
 
@@ -1035,9 +1103,24 @@ impl Fetcher {
                     // If the repository was moved or restored, try to use the current info
                     if let Some(exec_result) = exec_result {
                         if exec_result.moved_to_needauth {
-                            // Use the moved repository info, but mark it as possibly needing a manual check
+                            // Update the DB record to point to the needauth path, even though rescan failed
                             let mut moved_repo = exec_result.current_repo.clone();
                             moved_repo.last_fetch_at = repo.last_fetch_at;
+                            if let Err(e) = db.move_repository(&exec_result.original_repo.path, &mut moved_repo) {
+                                eprintln!("ERROR: DB move to needauth failed '{}': {}", moved_repo.name, e);
+                                // Attempt filesystem rollback: move repo back to original path
+                                let needauth_path = std::path::PathBuf::from(&moved_repo.path);
+                                let original_path = std::path::PathBuf::from(&exec_result.original_repo.path);
+                                if needauth_path.exists() && !original_path.exists() {
+                                    if let Err(rollback_err) = std::fs::rename(&needauth_path, &original_path) {
+                                        eprintln!("CRITICAL: Filesystem rollback also failed '{}': {}", moved_repo.name, rollback_err);
+                                        eprintln!("  Repo is at '{}' but DB points to '{}'", needauth_path.display(), original_path.display());
+                                    } else {
+                                        eprintln!("  Filesystem rollback succeeded: repo restored to '{}'", original_path.display());
+                                        moved_repo.path = exec_result.original_repo.path.clone();
+                                    }
+                                }
+                            }
                             updated_repos.push(moved_repo);
                             continue;
                         } else if exec_result.restored_from_needauth {
@@ -1089,8 +1172,8 @@ impl FetchSummary {
         let mut other_failures = Vec::new();
         
         for result in &self.results {
-            if !result.success {
-                if let Some(ref error) = result.error {
+            if !result.success
+                && let Some(ref error) = result.error {
                     if error.contains("Network error") || error.contains("Timeout") {
                         network_failures.push(result);
                     } else if error.contains("Authentication required") 
@@ -1103,7 +1186,6 @@ impl FetchSummary {
                         other_failures.push(result);
                     }
                 }
-            }
         }
         
         if self.failed > 0 {
@@ -1116,11 +1198,11 @@ impl FetchSummary {
         }
         
         if self.failed > 0 {
-            println!("\n⚠️ 失败详情:");
-            
+            println!("\n⚠️ Failure details:");
+
             let print_group = |label: &str, icon: &str, items: &[&FetchResultModel]| {
                 if items.is_empty() { return; }
-                println!("   {} {} ({}个):", icon, label, items.len());
+                println!("   {icon} {label} ({})", items.len());
                 for (i, result) in items.iter().enumerate() {
                     let is_last = i == items.len() - 1;
                     let corner = if is_last { "└─" } else { "├─" };
@@ -1129,19 +1211,18 @@ impl FetchSummary {
                         .and_then(|n| n.to_str())
                         .unwrap_or(&result.repo_path);
                     let retry_info = if result.retry_count > 0 {
-                        format!(" (重试{}次)", result.retry_count)
+                        format!(" (retried {}x)", result.retry_count)
                     } else {
                         String::new()
                     };
-                    println!("      {} {}{}: {}", 
-                        corner, short_path, retry_info,
+                    println!("      {corner} {short_path}{retry_info}: {}",
                         result.error.as_deref().unwrap_or("Unknown error"));
                 }
             };
-            
-            print_group("网络错误", "🔌", &network_failures);
-            print_group("认证/仓库错误", "🔒", &auth_failures);
-            print_group("其他错误", "❌", &other_failures);
+
+            print_group("Network errors", "🔌", &network_failures);
+            print_group("Auth/repo errors", "🔒", &auth_failures);
+            print_group("Other errors", "❌", &other_failures);
         }
     }
 }

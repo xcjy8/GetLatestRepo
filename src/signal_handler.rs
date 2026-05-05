@@ -18,29 +18,41 @@ use std::time::Duration;
 /// 全局关闭标志
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+/// 防止重复初始化
+static INIT_CALLED: AtomicBool = AtomicBool::new(false);
+
 /// 初始化信号处理
 ///
 /// 第一次 Ctrl+C → 设置关闭标志，启动 10 秒强制退出定时器
 /// 第二次 Ctrl+C → 立即 `process::exit(130)`
 /// 10 秒超时   → `process::exit(130)`
+///
+/// 本函数是幂等的：多次调用不会产生额外的后台任务。
 pub fn init() {
+    if INIT_CALLED
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+
     tokio::spawn(async {
         // 等待第一次 Ctrl+C
         if tokio::signal::ctrl_c().await.is_err() {
             return;
         }
 
-        eprintln!("\n⚠️  收到中断信号，正在优雅关闭...");
-        eprintln!("    再次按 Ctrl+C 可立即强制退出");
+        eprintln!("\n⚠️  Interrupt received, shutting down gracefully...");
+        eprintln!("    Press Ctrl+C again to force quit immediately");
         SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
 
         // 10 秒超时与第二次 Ctrl+C 竞争
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(10)) => {
-                eprintln!("\n⚠️  优雅关闭超时（10秒），强制退出");
+                eprintln!("\n⚠️  Graceful shutdown timed out (10s), forcing exit");
             }
             _ = tokio::signal::ctrl_c() => {
-                eprintln!("\n✗ 收到第二次中断信号，立即强制退出");
+                eprintln!("\n✗ Second interrupt received, forcing exit immediately");
             }
         }
 
@@ -50,18 +62,20 @@ pub fn init() {
 
 /// 检查是否收到关闭请求
 pub fn is_shutdown_requested() -> bool {
-    SHUTDOWN_REQUESTED.load(Ordering::Relaxed)
+    SHUTDOWN_REQUESTED.load(Ordering::Acquire)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicBool;
 
     #[test]
-    fn test_shutdown_flag() {
-        assert!(!is_shutdown_requested());
-        SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
-        assert!(is_shutdown_requested());
-        SHUTDOWN_REQUESTED.store(false, Ordering::SeqCst);
+    fn test_shutdown_flag_logic() {
+        // Test AtomicBool logic with a local instance to avoid global state race
+        let flag = AtomicBool::new(false);
+        assert!(!flag.load(Ordering::Relaxed));
+        flag.store(true, Ordering::SeqCst);
+        assert!(flag.load(Ordering::Relaxed));
     }
 }

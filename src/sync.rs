@@ -172,7 +172,7 @@ impl RepoSync {
             }
 
             // Execute full scan
-            Scanner::scan_all(sources, db, progress).await?;
+            Scanner::scan_all(sources, db, progress, crate::utils::DEFAULT_MAX_CONCURRENT_SCAN).await?;
 
             // Recheck to confirm synced
             let final_status = self.check_sync_status(sources, db)?;

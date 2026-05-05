@@ -17,6 +17,10 @@ pub async fn execute(path: PathBuf, show_diff: bool, issues: bool) -> Result<()>
             db.list_repositories()
         }).await
             .map_err(|e| anyhow::anyhow!("Failed to list repositories: {}", e))??;
+        if repos.is_empty() {
+            println!("{} 暂无仓库记录，请先执行 scan 命令", "ℹ".blue());
+            return Ok(());
+        }
         print_issues_view(&repos);
         return Ok(());
     }

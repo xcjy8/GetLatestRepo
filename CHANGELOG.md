@@ -2,6 +2,33 @@
 
 ---
 
+## [0.1.6] - 2026-05-05
+
+> Rust Edition 2024 升级、死代码清理与安全扫描前置
+
+### Changed
+
+- **Rust Edition 2024**: `Cargo.toml` 升级至 `edition = "2024"`
+- **标准库替代 once_cell**: `security.rs` 中 `once_cell::sync::Lazy` 全部迁移至 `std::sync::LazyLock`，移除 `once_cell` 依赖
+- **清理死代码与预留字段**:
+  - `fetcher.rs`: 移除 `fallback_from_git2`、`fallback_reason` 等已废弃字段及相关方法
+  - `git.rs`: 移除 `fetch_with_git2`、`new`、`set_proxy` 等未使用接口
+  - `fetcher.rs`: 移除 `with_auto_skip_high_risk` 未使用构建器方法
+- **语法升级**: 大量 `if let` 嵌套改写为 Rust 2024 `if let ... &&` 链式语法（`scanner.rs`、`security.rs`、`fetcher.rs` 等）
+- **scanner 并发参数化**: `scan()` 新增 `jobs` 参数，取消硬编码 `DEFAULT_MAX_CONCURRENT`，改为运行时 `clamp(1, 100)`
+- **Windows 进程锁改进**: `main.rs` 中 PID 文件使用 `create_new` 原子创建，新增过期锁检测与自动恢复机制
+- **reporter/terminal**: 精简终端报告头部输出，优化 Summary 排版
+
+### Added
+
+- **fetcher 安全扫描前置批处理**: 新增 `prescan_security_batch()`，在 fetch 前并发执行安全扫描，高风险仓库汇总后统一交互确认
+
+### Removed
+
+- 删除 `src/network_test.rs` 网络诊断测试模块（未在生产中使用）
+
+---
+
 ## [0.1.5] - 2026-04-22
 
 > 基于数据验证结果，彻底移除 git2 网络 fetch 路径

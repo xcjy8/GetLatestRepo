@@ -34,10 +34,10 @@ pub async fn execute(path: PathBuf) -> Result<()> {
     print_info(&format!("Config file: {}", AppConfig::config_path()?.display()));
     print_info(&format!("Database: {}", Database::db_path()?.display()));
     println!();
-    println!("{} 下一步操作：", "▶".cyan());
-    println!("   1. 运行 `getlatestrepo scan` 扫描仓库");
-    println!("   2. 运行 `getlatestrepo fetch` 检查远程更新");
-    println!("   3. 运行 `getlatestrepo workflow daily` 自动执行每日检查");
+    println!("{} Next steps:", "▶".cyan());
+    println!("   1. Run `getlatestrepo scan` to scan repositories");
+    println!("   2. Run `getlatestrepo fetch` to check remote updates");
+    println!("   3. Run `getlatestrepo workflow daily` for automated daily checks");
 
     Ok(())
 }

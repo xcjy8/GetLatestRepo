@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn test_concurrent_execute() {
         let tasks: Vec<_> = (0..10)
-            .map(|i| move || -> i32 { (i * 2) as i32 })
+            .map(|i| move || -> i32 { i * 2 })
             .collect();
 
         let results = execute_concurrent_raw(tasks, 3);
@@ -209,7 +209,7 @@ mod tests {
     fn test_panic_recovery() {
         let tasks: Vec<Box<dyn FnOnce() -> i32 + Send>> = vec![
             Box::new(|| 1),
-            Box::new(|| panic!("task 2 panic")),
+            Box::new(|| -> i32 { panic!("task 2 panic") }),
             Box::new(|| 3),
         ];
 
@@ -224,8 +224,9 @@ mod tests {
     #[test]
     fn test_counter_no_leak_on_panic() {
         // Test that counter doesn't leak even if all tasks panic
-        let tasks: Vec<Box<dyn FnOnce() -> () + Send>> = (0..5)
-            .map(|i| Box::new(move || panic!("task {} panic", i)) as Box<dyn FnOnce() -> () + Send>)
+        #[allow(clippy::unused_unit)]
+        let tasks: Vec<Box<dyn FnOnce() + Send>> = (0..5)
+            .map(|i| Box::new(move || -> () { panic!("task {i} panic") }) as Box<dyn FnOnce() + Send>)
             .collect();
 
         let _results = execute_concurrent_raw(tasks, 2);

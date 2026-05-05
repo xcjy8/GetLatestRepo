@@ -18,75 +18,114 @@ impl Reporter for TerminalReporter {
     fn generate(&self, repos: &[Repository], summary: &RepoSummary) -> Result<String> {
         let mut output = String::new();
 
-        // Title
-        output.push_str(&format!("\n{}", "═".repeat(70).cyan()));
-        output.push_str(&format!("\n  {}\n", "📦 GetLatestRepo Scan Report".bold()));
-        output.push_str(&format!("{}\n\n", "═".repeat(70).cyan()));
-
         // Summary
-        output.push_str(&format!("{}", "📊 Summary\n".bold().underline()));
-        output.push_str(&format!("   Total repositories: {}\n", summary.total.to_string().cyan()));
-        output.push_str(&format!("   {} Need updates  |  {} Synced  |  {} dirty  |  {} errors\n",
+        output.push_str(&format!("\n{}\n", "📊 Summary".bold().underline()));
+        output.push_str(&format!("   Total: {} | {} behind | {} synced | {} dirty | {} unreachable\n",
+            summary.total.to_string().cyan(),
             format!("{}", summary.has_updates).red().bold(),
             format!("{}", summary.synced).green(),
             format!("{}", summary.dirty).yellow(),
             format!("{}", summary.unreachable).dimmed()
         ));
-        output.push('\n');
 
-        // Table
-        if !repos.is_empty() {
-            output.push_str(&format!("{}\n", "📋 Repository list\n".bold().underline()));
+        // Compact mode for large repo counts: only show repos that need attention
+        if repos.len() >= 20 {
+            let attention_repos: Vec<&Repository> = repos.iter()
+                .filter(|r| r.behind_count > 0 || r.dirty || r.freshness == Freshness::Unreachable)
+                .collect();
 
-            let mut table = Table::new();
-            table
-                .set_content_arrangement(ContentArrangement::Dynamic)
-                .apply_modifier(UTF8_ROUND_CORNERS)
-                .set_header(vec![
-                    "#".cell(),
-                    "Repository".cell(),
-                    "Branch".cell(),
-                    "Status".cell(),
-                    "Remote commits".cell(),
-                    "Last update".cell(),
-                ]);
+            if attention_repos.is_empty() {
+                output.push_str(&format!("\n   {} All repositories are synced\n", "✓".green()));
+            } else {
+                output.push_str(&format!("\n{}\n", "⚠️  Repositories needing attention:".bold()));
 
-            for (idx, repo) in repos.iter().enumerate() {
-                let status = format!("{} {}", 
-                    repo.freshness.emoji(),
-                    if repo.dirty { "+dirty" } else { "" }
-                );
+                let mut table = Table::new();
+                table
+                    .set_content_arrangement(ContentArrangement::Dynamic)
+                    .apply_modifier(UTF8_ROUND_CORNERS)
+                    .set_header(vec![
+                        "Repository".cell(),
+                        "Branch".cell(),
+                        "Status".cell(),
+                        "Detail".cell(),
+                    ]);
 
-                let commits = if repo.behind_count > 0 {
-                    format!("{} behind", repo.behind_count).red().to_string()
-                } else if repo.ahead_count > 0 {
-                    format!("{} ahead", repo.ahead_count).yellow().to_string()
-                } else {
-                    "synced".green().to_string()
-                };
+                for repo in &attention_repos {
+                    let status = if repo.freshness == Freshness::Unreachable {
+                        "⚫ unreachable".dimmed().to_string()
+                    } else if repo.behind_count > 0 && repo.dirty {
+                        "🔴 behind +dirty".to_string()
+                    } else if repo.behind_count > 0 {
+                        format!("🔴 {} behind", repo.behind_count)
+                    } else {
+                        "📝 dirty".yellow().to_string()
+                    };
 
-                let last_update = format_duration(&repo.last_commit_at);
+                    let detail = if repo.freshness == Freshness::Unreachable {
+                        format_duration(&repo.last_fetch_at).dimmed().to_string()
+                    } else if repo.behind_count > 0 {
+                        format_duration(&repo.last_commit_at).dimmed().to_string()
+                    } else {
+                        format!("{} files", repo.dirty_files.len()).dimmed().to_string()
+                    };
 
-                table.add_row(vec![
-                    (idx + 1).to_string().dimmed().to_string(),
-                    repo.name.clone(),
-                    repo.branch.clone().unwrap_or_else(|| "-".to_string()).dimmed().to_string(),
-                    status,
-                    commits,
-                    last_update.dimmed().to_string(),
-                ]);
+                    table.add_row(vec![
+                        repo.name.clone(),
+                        repo.branch.clone().unwrap_or_else(|| "-".to_string()).dimmed().to_string(),
+                        status,
+                        detail,
+                    ]);
+                }
+
+                output.push_str(&table.to_string());
+                output.push('\n');
             }
+        } else {
+            // Small project: show full table
+            if !repos.is_empty() {
+                let mut table = Table::new();
+                table
+                    .set_content_arrangement(ContentArrangement::Dynamic)
+                    .apply_modifier(UTF8_ROUND_CORNERS)
+                    .set_header(vec![
+                        "#".cell(),
+                        "Repository".cell(),
+                        "Branch".cell(),
+                        "Status".cell(),
+                        "Remote commits".cell(),
+                        "Last update".cell(),
+                    ]);
 
-            output.push_str(&table.to_string());
-            output.push('\n');
+                for (idx, repo) in repos.iter().enumerate() {
+                    let status = format!("{} {}",
+                        repo.freshness.emoji(),
+                        if repo.dirty { "+dirty" } else { "" }
+                    );
+
+                    let commits = if repo.behind_count > 0 {
+                        format!("{} behind", repo.behind_count).red().to_string()
+                    } else if repo.ahead_count > 0 {
+                        format!("{} ahead", repo.ahead_count).yellow().to_string()
+                    } else {
+                        "synced".green().to_string()
+                    };
+
+                    let last_update = format_duration(&repo.last_commit_at);
+
+                    table.add_row(vec![
+                        (idx + 1).to_string().dimmed().to_string(),
+                        repo.name.clone(),
+                        repo.branch.clone().unwrap_or_else(|| "-".to_string()).dimmed().to_string(),
+                        status,
+                        commits,
+                        last_update.dimmed().to_string(),
+                    ]);
+                }
+
+                output.push_str(&table.to_string());
+                output.push('\n');
+            }
         }
-
-        // Legend
-        output.push('\n');
-        output.push_str(&format!("{}", "Legend:\n".dimmed()));
-        output.push_str(&format!("  {} Need updates  {} Synced  {} Unreachable  {} No remote  📝 have local changes\n",
-            "🔴".red(), "🟢".green(), "⚫".dimmed(), "⚪".white()
-        ));
 
         Ok(output)
     }
@@ -181,7 +220,7 @@ pub fn print_issues_view(repos: &[Repository]) {
             unreachable.push(repo);
             continue;
         }
-        if repo.dirty && repo.behind_count > 0 {
+        if repo.dirty || repo.behind_count > 0 {
             dirty_behind.push(repo);
         }
     }
@@ -189,41 +228,47 @@ pub fn print_issues_view(repos: &[Repository]) {
     let total_issues = needauth.len() + unreachable.len() + dirty_behind.len() + missing.len();
     
     println!("\n{}", "═".repeat(62).cyan());
-    println!("  {} {}", "⚠️".yellow(), "异常仓库总览".bold());
+    println!("  {} {}", "⚠️".yellow(), "Repository Issues Overview".bold());
     println!("{}", "═".repeat(62).cyan());
-    println!("  共 {} 个异常仓库\n", total_issues.to_string().yellow().bold());
-    
+    println!("  {} issue(s) found\n", total_issues.to_string().yellow().bold());
+
     if total_issues == 0 {
-        println!("  {} 所有仓库状态正常\n", "✓".green());
+        println!("  {} All repositories are in good shape\n", "✓".green());
         return;
     }
-    
+
     let print_group = |icon: &str, title: &str, items: &[&Repository], detail_fn: &dyn Fn(&Repository) -> String| {
         if items.is_empty() { return; }
-        println!("  {} {} ({}个)", icon, title.bold(), items.len());
+        println!("  {icon} {} ({})", title.bold(), items.len());
         for (i, repo) in items.iter().enumerate() {
             let is_last = i == items.len() - 1;
             let corner = if is_last { "└─" } else { "├─" };
             let detail = detail_fn(repo);
-            println!("     {} {} {}", corner, repo.name.cyan(), detail.dimmed());
+            println!("     {corner} {} {}", repo.name.cyan(), detail.dimmed());
         }
         println!();
     };
-    
-    print_group("🔒", "认证隔离", &needauth, &|repo| {
+
+    print_group("🔒", "Auth isolated", &needauth, &|repo| {
         format!("[{}]", repo.upstream_url.as_deref().map(crate::utils::sanitize_url).unwrap_or_else(|| "-".to_string()))
     });
-    
-    print_group("⚫", "不可达", &unreachable, &|repo| {
-        format!("[上次 fetch: {}]", crate::git::format_duration(&repo.last_fetch_at))
+
+    print_group("⚫", "Unreachable", &unreachable, &|repo| {
+        format!("[last fetch: {}]", crate::git::format_duration(&repo.last_fetch_at))
     });
-    
-    print_group("📝", "本地修改待同步", &dirty_behind, &|repo| {
-        format!("[behind {}, {} files changed]", repo.behind_count, repo.dirty_files.len())
+
+    print_group("📝", "需要关注", &dirty_behind, &|repo| {
+        if repo.behind_count > 0 && repo.dirty {
+            format!("[落后 {} 个提交, {} 个文件变更]", repo.behind_count, repo.dirty_files.len())
+        } else if repo.behind_count > 0 {
+            format!("[落后 {} 个提交]", repo.behind_count)
+        } else {
+            format!("[{} 个文件变更]", repo.dirty_files.len())
+        }
     });
-    
-    print_group("❌", "路径失效", &missing, &|_repo| {
-        "[路径不存在]".to_string()
+
+    print_group("❌", "Path missing", &missing, &|_repo| {
+        "[path does not exist]".to_string()
     });
 }
 

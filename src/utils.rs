@@ -28,15 +28,14 @@ pub const SECURITY_MAX_FILE_SIZE: usize = 1024 * 1024;
 /// Convert `https://token@github.com/user/repo.git` to `https://github.com/user/repo.git`
 pub fn sanitize_url(url: &str) -> String {
     // Parse URL, remove user info part
-    if let Ok(parsed) = url::Url::parse(url) {
-        if parsed.username() != "" || parsed.password().is_some() {
+    if let Ok(parsed) = url::Url::parse(url)
+        && (parsed.username() != "" || parsed.password().is_some()) {
             // Rebuild URL without credentials
             let mut cleaned = parsed.clone();
             cleaned.set_username("").ok();
             cleaned.set_password(None).ok();
             return cleaned.to_string();
         }
-    }
     // If parsing fails, return original URL (may be local path or other format)
     url.to_string()
 }

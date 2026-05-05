@@ -1,12 +1,12 @@
 use anyhow::Result;
 use colored::Colorize;
 use git2::{Oid, Repository};
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// Pre-compiled sensitive file patterns (global cache)
-static SENSITIVE_PATTERNS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+static SENSITIVE_PATTERNS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     [
         ".gitignore", ".gitmodules", "Cargo.toml", "package.json",
         "requirements.txt", "setup.py", "Makefile", "Dockerfile",
@@ -24,7 +24,7 @@ static SENSITIVE_PATTERNS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 });
 
 /// Pre-compiled code file extensions (global cache)
-static CODE_EXTENSIONS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+static CODE_EXTENSIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     [
         "rs", "py", "js", "ts", "java", "go", "c", "cpp", "h", "hpp",
         "rb", "php", "sh", "bash", "zsh", "fish", "ps1", "bat", "cmd",
@@ -37,7 +37,7 @@ static CODE_EXTENSIONS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 });
 
 /// Pre-compiled suspicious code patterns (global cache, avoid repeated compilation)
-static SUSPICIOUS_PATTERNS: Lazy<Vec<(regex::Regex, &'static str)>> = Lazy::new(|| {
+static SUSPICIOUS_PATTERNS: LazyLock<Vec<(regex::Regex, &'static str)>> = LazyLock::new(|| {
     let raw: &[(&str, &str)] = &[
         (r"eval\s*\(", "eval function call"),
         (r"exec\s*\(", "exec function call"),
@@ -170,32 +170,28 @@ impl SecurityScanner {
         // 2. If local and remote OIDs exist, analyze differences
         if let (Some(local), Some(remote)) = (local_oid, remote_oid) {
             // Check file count changes
-            if let Ok(risk) = Self::check_file_count_anomaly(&repo, local, remote) {
-                if risk.level != RiskLevel::Safe {
+            if let Ok(risk) = Self::check_file_count_anomaly(&repo, local, remote)
+                && risk.level != RiskLevel::Safe {
                     risks.push(risk);
                 }
-            }
 
             // Check sensitive file changes
-            if let Ok(risk) = Self::check_sensitive_files(&repo, local, remote) {
-                if risk.level != RiskLevel::Safe {
+            if let Ok(risk) = Self::check_sensitive_files(&repo, local, remote)
+                && risk.level != RiskLevel::Safe {
                     risks.push(risk);
                 }
-            }
 
             // Check suspicious code patterns
-            if let Ok(risk) = Self::check_suspicious_patterns(&repo, local, remote) {
-                if risk.level != RiskLevel::Safe {
+            if let Ok(risk) = Self::check_suspicious_patterns(&repo, local, remote)
+                && risk.level != RiskLevel::Safe {
                     risks.push(risk);
                 }
-            }
 
             // Check committer anomalies
-            if let Ok(risk) = Self::check_committer_anomaly(&repo, local, remote) {
-                if risk.level != RiskLevel::Safe {
+            if let Ok(risk) = Self::check_committer_anomaly(&repo, local, remote)
+                && risk.level != RiskLevel::Safe {
                     risks.push(risk);
                 }
-            }
         }
 
         let max_level = risks.iter()
@@ -270,7 +266,6 @@ impl SecurityScanner {
     }
 
     /// Count files in tree
-    #[allow(dead_code)]
     fn count_files_in_tree(_repo: &Repository, tree: &git2::Tree) -> Result<usize> {
         let mut count = 0;
         tree.walk(git2::TreeWalkMode::PreOrder, |_, entry| {
@@ -297,7 +292,14 @@ impl SecurityScanner {
             if let Some(path) = delta.new_file().path() {
                 let path_str = path.to_string_lossy();
                 for pattern in SENSITIVE_PATTERNS.iter() {
-                    if path_str.contains(pattern) {
+                    let matched = if let Some(suffix) = pattern.strip_prefix("*.") {
+                        // Glob pattern: match by extension suffix
+                        path_str.ends_with(suffix)
+                    } else {
+                        // Literal substring match
+                        path_str.contains(pattern)
+                    };
+                    if matched {
                         modified_sensitive_files.push(path_str.to_string());
                         break;
                     }
@@ -351,8 +353,10 @@ impl SecurityScanner {
         let diff = repo.diff_tree_to_tree(Some(&local_tree), Some(&remote_tree), None)?;
 
         let mut found_patterns: Vec<(String, String)> = Vec::new();
+        let mut oversized_files: Vec<(String, String)> = Vec::new();
 
         for delta in diff.deltas() {
+            // Skip deleted files — removing code is generally safe
             if delta.status() == git2::Delta::Deleted {
                 continue;
             }
@@ -362,6 +366,16 @@ impl SecurityScanner {
 
                 // Only check code files
                 if !Self::is_code_file(&path_str) {
+                    continue;
+                }
+
+                // Track oversized files separately (Medium risk, not Critical)
+                let file_size = delta.new_file().size() as usize;
+                if file_size > Self::MAX_FILE_SIZE {
+                    oversized_files.push((
+                        path_str.to_string(),
+                        format!("Oversized file ({}KB) bypasses pattern scanning", file_size / 1024),
+                    ));
                     continue;
                 }
 
@@ -392,6 +406,21 @@ impl SecurityScanner {
             });
         }
 
+        if !oversized_files.is_empty() {
+            let details: Vec<String> = oversized_files
+                .iter()
+                .take(5)
+                .map(|(file, desc)| format!("{}: {}", file, desc))
+                .collect();
+
+            return Ok(SecurityRisk {
+                level: RiskLevel::Medium,
+                risk_type: RiskType::SuspiciousCodePattern,
+                description: format!("{} oversized files bypass pattern scanning", oversized_files.len()),
+                details,
+            });
+        }
+
         Ok(SecurityRisk {
             level: RiskLevel::Safe,
             risk_type: RiskType::SuspiciousCodePattern,
@@ -407,11 +436,10 @@ impl SecurityScanner {
 
     /// Check if it is a code file
     fn is_code_file(path: &str) -> bool {
-        if let Some(ext) = Path::new(path).extension() {
-            if let Some(ext_str) = ext.to_str() {
+        if let Some(ext) = Path::new(path).extension()
+            && let Some(ext_str) = ext.to_str() {
                 return CODE_EXTENSIONS.iter().any(|&e| e.eq_ignore_ascii_case(ext_str));
             }
-        }
         false
     }
 
@@ -494,11 +522,10 @@ impl SecurityScanner {
         let mut committers = HashSet::new();
         let mut walk = repo.revwalk()?;
         
-        if let Ok(head) = repo.head() {
-            if let Some(oid) = head.target() {
+        if let Ok(head) = repo.head()
+            && let Some(oid) = head.target() {
                 walk.push(oid)?;
             }
-        }
 
         for oid in walk.take(200) {
             let oid = oid?;

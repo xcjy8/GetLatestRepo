@@ -121,12 +121,11 @@ impl Database {
         if version < Self::SCHEMA_VERSION {
             // Future schema migrations go here
             // e.g. ALTER TABLE ADD COLUMN ...
-        }
 
-        self.conn.execute(
-            &format!("PRAGMA user_version = {}", Self::SCHEMA_VERSION),
-            [],
-        )?;
+            self.conn.execute_batch(
+                &format!("PRAGMA user_version = {};", Self::SCHEMA_VERSION),
+            )?;
+        }
 
         Ok(())
     }
@@ -316,18 +315,20 @@ impl Database {
 
     /// Update fetch time
     pub fn update_fetch_time(&self, path: &str) -> Result<()> {
+        let now = chrono::Local::now();
         self.conn.execute(
-            "UPDATE repositories SET last_fetch_at = CURRENT_TIMESTAMP WHERE path = ?1",
-            params![path],
+            "UPDATE repositories SET last_fetch_at = ?1 WHERE path = ?2",
+            params![now, path],
         )?;
         Ok(())
     }
 
     /// Update pull time
     pub fn update_pull_time(&self, path: &str) -> Result<()> {
+        let now = chrono::Local::now();
         self.conn.execute(
-            "UPDATE repositories SET last_pull_at = CURRENT_TIMESTAMP WHERE path = ?1",
-            params![path],
+            "UPDATE repositories SET last_pull_at = ?1 WHERE path = ?2",
+            params![now, path],
         )?;
         Ok(())
     }
@@ -417,13 +418,5 @@ impl Database {
             last_fetch_at: row.get("last_fetch_at")?,
             last_pull_at: row.get("last_pull_at")?,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_database_operations() {
-        // Test basic database operations
     }
 }

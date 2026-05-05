@@ -37,6 +37,11 @@ impl RepoChangeView for crate::workflow::types::DirtyRepoInfo {
     fn change_summary(&self) -> String { self.change_summary() }
 }
 
+/// Convert a Repository into a DirtyRepoInfo
+fn repo_to_dirty_info(r: crate::models::Repository) -> DirtyRepoInfo {
+    DirtyRepoInfo::new(r.name, r.path, r.branch.clone(), r.file_changes.clone())
+}
+
 /// Print a single repository's change tree (shared between execute() and execute_pull_safe())
 fn print_repo_change_tree(repo: &impl RepoChangeView, is_last: bool, base_indent: usize) {
     let pad = " ".repeat(base_indent);
@@ -225,8 +230,9 @@ impl WorkflowExecutor {
                                         let corner = if is_last { "└─" } else { "├─" };
 
                                         let error_msg = repo.error.as_deref().unwrap_or("Unknown error");
-                                        let short_error = if error_msg.len() > 42 {
-                                            format!("{}...", &error_msg[..42])
+                                        let short_error = if error_msg.chars().count() > 42 {
+                                            let truncated: String = error_msg.chars().take(42).collect();
+                                            format!("{truncated}...")
                                         } else {
                                             error_msg.to_string()
                                         };
@@ -271,16 +277,6 @@ impl WorkflowExecutor {
                         Ok(summary) => {
                             if !self.silent {
                                 println!("{} {} repos", "✓".green(), summary.total);
-
-                                if summary.has_updates > 0 {
-                                    println!("   {} repositories need updates", summary.has_updates.to_string().red().bold());
-                                }
-                                if summary.dirty > 0 {
-                                    println!("   {} repositories have local changes", summary.dirty.to_string().yellow());
-                                }
-                                if summary.unreachable > 0 {
-                                    println!("   {} repositories remote unreachable", summary.unreachable.to_string().dimmed());
-                                }
                             }
 
                             result.repo_summary = Some(summary);
@@ -344,11 +340,11 @@ impl WorkflowExecutor {
 
                                     // 展示成功拉取的仓库列表及最新提交时间
                                     if !pull_result.success_repos.is_empty() {
-                                        println!("     {} 成功拉取的仓库：", "✓".green());
+                                        println!("     {} Successfully pulled repos:", "✓".green());
                                         for (i, (name, time)) in pull_result.success_repos.iter().enumerate() {
                                             let is_last = i == pull_result.success_repos.len() - 1;
                                             let corner = if is_last { "└─" } else { "├─" };
-                                            let time_str = time.as_deref().unwrap_or("(无时间信息)");
+                                            let time_str = time.as_deref().unwrap_or("(no time info)");
                                             println!("        {} {} {}",
                                                 corner,
                                                 name.green(),
@@ -422,7 +418,7 @@ impl WorkflowExecutor {
                                 );
 
                                 if !pull_result.conflict_repos.is_empty() {
-                                    println!("   {} 个仓库 stash pop 冲突，需手动恢复：",
+                                    println!("   {} repo(s) have stash pop conflicts, manual recovery needed:",
                                         pull_result.conflict_repos.len().to_string().yellow());
                                     for (i, info) in pull_result.conflict_repos.iter().enumerate() {
                                         let is_last = i == pull_result.conflict_repos.len() - 1;
@@ -437,7 +433,7 @@ impl WorkflowExecutor {
                                         println!("        ├─ stash: {}", stash_display);
                                         
                                         if !info.conflict_files.is_empty() {
-                                            println!("        ├─ 冲突文件 ({}个):", info.conflict_files.len());
+                                            println!("        ├─ Conflict files ({}):", info.conflict_files.len());
                                             for (j, file) in info.conflict_files.iter().enumerate() {
                                                 let is_last_file = j == info.conflict_files.len() - 1;
                                                 let file_connector = if is_last_file { "└─" } else { "├─" };
@@ -445,7 +441,7 @@ impl WorkflowExecutor {
                                             }
                                         }
                                         
-                                        println!("        └─ 恢复命令: git -C {} stash pop stash@{{index}}", info.path);
+                                        println!("        └─ Recovery command: git -C {} stash pop stash@{{index}}", info.path);
                                     }
                                 }
                                 if pull_result.failed_count > 0 {
@@ -513,7 +509,7 @@ impl WorkflowExecutor {
             .collect();
 
         if repos.is_empty() {
-            let _ = Scanner::scan_all(sources, db, false).await?;
+            let _ = Scanner::scan_all(sources, db, false, jobs).await?;
 
             let all_repos = db.list_repositories()?;
             repos = all_repos.into_iter()
@@ -543,7 +539,7 @@ impl WorkflowExecutor {
     ) -> Result<RepoSummary> {
         use crate::reporter::{html::HtmlReporter, markdown::MarkdownReporter, terminal::TerminalReporter, Reporter, save_report_async};
 
-        let repos = Scanner::scan_all(sources, db, false).await?;
+        let repos = Scanner::scan_all(sources, db, false, crate::utils::DEFAULT_MAX_CONCURRENT_SCAN).await?;
 
         if repos.is_empty() {
             anyhow::bail!("No Git repositories found");
@@ -712,12 +708,7 @@ impl WorkflowExecutor {
             }
             let mut result = PullSafeResult::new();
             result.dirty_repos = dirty_repos.into_iter()
-                .map(|r| crate::workflow::types::DirtyRepoInfo::new(
-                    r.name, 
-                    r.path, 
-                    r.branch.clone(),
-                    r.file_changes.clone()
-                ))
+                .map(repo_to_dirty_info)
                 .collect();
             return Ok(result);
         }
@@ -732,7 +723,7 @@ impl WorkflowExecutor {
 
             for repo in &clean_repos {
                 if crate::signal_handler::is_shutdown_requested() {
-                    anyhow::bail!("用户中断，停止 Pull 操作");
+                    anyhow::bail!("User interrupted, stopping pull operation");
                 }
 
                 let path = std::path::PathBuf::from(&repo.path);
@@ -763,45 +754,42 @@ impl WorkflowExecutor {
                 }
             }
 
-            if !unsafe_repos.is_empty() && !self.silent {
-                println!("  │");
-                println!("  ├─ {} Found {} repositories at risk:", "🚨".red(), unsafe_repos.len());
-                for (i, (repo, report)) in unsafe_repos.iter().enumerate() {
-                    let is_last = i == unsafe_repos.len() - 1;
-                    let _branch = if is_last { "   " } else { "  │" };
+            if !unsafe_repos.is_empty() {
+                let unsafe_names: std::collections::HashSet<_> = unsafe_repos
+                    .iter()
+                    .map(|(r, _)| r.name.clone())
+                    .collect();
+                clean_repos.retain(|r| !unsafe_names.contains(&r.name));
 
-                    if let Some(ref warning) = report.warning {
-                        println!("  │    ⚠ {}", repo.name.red().bold());
-                        println!("  │      {}", warning);
+                if !self.silent {
+                    println!("  │");
+                    println!("  ├─ {} Skipping {} risky repositories:", "🚨".red(), unsafe_repos.len());
+                    for (repo, report) in &unsafe_repos {
+                        if let Some(ref warning) = report.warning {
+                            println!("  │    ⚠ {}: {}", repo.name.red().bold(), warning);
+                        } else {
+                            println!("  │    ⚠ {}", repo.name.red().bold());
+                        }
                     }
-                }
-                println!("  │");
-                println!("  ├─ {}", "Pull operation blocked to protect your code".yellow());
-
-                if self.dry_run {
-                    println!("  │   (dry-run mode, preview only)");
-                } else {
-                    let unsafe_names: std::collections::HashSet<_> = unsafe_repos
-                        .iter()
-                        .map(|(r, _)| r.name.clone())
-                        .collect();
-                    clean_repos.retain(|r| !unsafe_names.contains(&r.name));
 
                     if clean_repos.is_empty() {
-                        println!("  └─ {}", "No safe repositories to update".red());
+                        println!("  │");
+                        println!("  └─ {}", "All behind repositories are risky or dirty, no safe pull possible".yellow());
                         let mut result = PullSafeResult::new();
                         result.dirty_repos = dirty_repos.into_iter()
-                            .map(|r| crate::workflow::types::DirtyRepoInfo::new(
-                                r.name, 
-                                r.path, 
-                                r.branch.clone(),
-                                r.file_changes.clone()
-                            ))
+                            .map(repo_to_dirty_info)
                             .collect();
                         return Ok(result);
                     }
 
-                    println!("  │   {} safe repositories will continue Pull", clean_repos.len());
+                    println!("  │");
+                    println!("  ├─ {} {} safe repositories will continue Pull", "✓".green(), clean_repos.len());
+                } else if clean_repos.is_empty() {
+                    let mut result = PullSafeResult::new();
+                    result.dirty_repos = dirty_repos.into_iter()
+                        .map(repo_to_dirty_info)
+                        .collect();
+                    return Ok(result);
                 }
             }
         }
@@ -890,12 +878,7 @@ impl WorkflowExecutor {
 
             let mut result = PullSafeResult::new();
             result.dirty_repos = dirty_repos.into_iter()
-                .map(|r| crate::workflow::types::DirtyRepoInfo::new(
-                    r.name, 
-                    r.path, 
-                    r.branch.clone(),
-                    r.file_changes.clone()
-                ))
+                .map(repo_to_dirty_info)
                 .collect();
             result.skipped_repos = up_to_date_repos.into_iter().map(|r| r.name).collect();
             return Ok(result);
@@ -1005,12 +988,7 @@ impl WorkflowExecutor {
 
         let mut pull_result = PullSafeResult::new();
         pull_result.dirty_repos = dirty_repos.into_iter()
-            .map(|r| crate::workflow::types::DirtyRepoInfo::new(
-                r.name, 
-                r.path, 
-                r.branch.clone(),
-                r.file_changes.clone()
-            ))
+            .map(repo_to_dirty_info)
             .collect();
         pull_result.skipped_repos = up_to_date_repos.into_iter().map(|r| r.name).collect();
         let mut success_paths: Vec<(String, String)> = Vec::new();
@@ -1022,12 +1000,8 @@ impl WorkflowExecutor {
             match result {
                 Some((name, path, Ok(()))) => {
                     pull_result.success_count += 1;
-                    // Explicit error handling
-                    if let Err(e) = db.update_pull_time(&path) {
-                        eprintln!("   ⚠️ Update pull time failed '{}': {}", crate::utils::sanitize_path(&path), e);
-                    }
                     success_paths.push((name.clone(), path.clone()));
-                    
+
                     // Refresh the repository status and collect latest commit time
                     let mut latest_time = None;
                     if let Ok(Some(old_repo)) = db.get_repository(&path) {
@@ -1042,6 +1016,11 @@ impl WorkflowExecutor {
                             latest_time = fresh.last_commit_at;
                             if let Err(e) = db.upsert_repository(&mut fresh) {
                                 eprintln!("   ⚠️ Update repository status failed '{}': {}", crate::utils::sanitize_path(&path), e);
+                            } else {
+                                // Only update pull time after upsert succeeds
+                                if let Err(e) = db.update_pull_time(&path) {
+                                    eprintln!("   ⚠️ Update pull time failed '{}': {}", crate::utils::sanitize_path(&path), e);
+                                }
                             }
                         }
                     }
@@ -1057,7 +1036,11 @@ impl WorkflowExecutor {
                 None => {
                     pull_result.failed_count += 1;
                     if !self.silent {
-                        eprintln!("   {} pull task panicked", "✗".red());
+                        if crate::signal_handler::is_shutdown_requested() {
+                            eprintln!("   {} pull task interrupted by signal", "⚠️".yellow());
+                        } else {
+                            eprintln!("   {} pull task panicked", "✗".red());
+                        }
                     }
                 }
             }
@@ -1142,16 +1125,10 @@ impl WorkflowExecutor {
             match result {
                 Some((name, path, Ok(crate::git::PullForceOutcome::Success))) => {
                     pull_result.success_count += 1;
-                    if let Err(e) = db.update_pull_time(&path) {
-                        eprintln!("   ⚠️ Update pull time failed '{}': {}", crate::utils::sanitize_path(&path), e);
-                    }
                     success_paths.push((name, path));
                 }
                 Some((name, path, Ok(crate::git::PullForceOutcome::Conflict { stash_name, conflict_files, stash_index }))) => {
-                    pull_result.success_count += 1;
-                    if let Err(e) = db.update_pull_time(&path) {
-                        eprintln!("   ⚠️ Update pull time failed '{}': {}", crate::utils::sanitize_path(&path), e);
-                    }
+                    pull_result.failed_count += 1;
                     pull_result.conflict_repos.push(crate::workflow::types::ConflictInfo {
                         name: name.clone(),
                         path: path.clone(),
@@ -1159,7 +1136,6 @@ impl WorkflowExecutor {
                         conflict_files,
                         stash_index,
                     });
-                    success_paths.push((name, path));
                 }
                 Some((name, _, Err(e))) => {
                     pull_result.failed_count += 1;
@@ -1167,7 +1143,11 @@ impl WorkflowExecutor {
                 }
                 None => {
                     pull_result.failed_count += 1;
-                    eprintln!("   {} pull task panicked", "✗".red());
+                    if crate::signal_handler::is_shutdown_requested() {
+                        eprintln!("   {} pull task interrupted by signal", "⚠️".yellow());
+                    } else {
+                        eprintln!("   {} pull task panicked", "✗".red());
+                    }
                 }
             }
         }
@@ -1185,6 +1165,11 @@ impl WorkflowExecutor {
                     fresh.last_pull_at = Some(chrono::Local::now());
                     if let Err(e) = db.upsert_repository(&mut fresh) {
                         eprintln!("   Warning: Failed to update repository after pull: {}", e);
+                    } else {
+                        // Only update pull time after upsert succeeds
+                        if let Err(e) = db.update_pull_time(&path) {
+                            eprintln!("   ⚠️ Update pull time failed '{}': {}", crate::utils::sanitize_path(&path), e);
+                        }
                     }
                 }
             }

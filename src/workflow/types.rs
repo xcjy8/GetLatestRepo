@@ -155,11 +155,16 @@ impl BuiltInWorkflows {
     fn pull_safe() -> Workflow {
         Workflow {
             name: "pull-safe".to_string(),
-            description: "Safe update: only pull clean repositories (dirty repos auto-skipped)".to_string(),
+            description: "Safe update: fetch → scan → pull clean repositories (dirty repos auto-skipped)".to_string(),
             steps: vec![
                 WorkflowStep::Fetch {
                     jobs: Some(5),
                     timeout: Some(30),
+                },
+                WorkflowStep::Scan {
+                    output: OutputFormat::Terminal,
+                    open: false,
+                    only_dirty_or_behind: false,
                 },
                 WorkflowStep::PullSafe {
                     jobs: Some(5),
@@ -176,11 +181,16 @@ impl BuiltInWorkflows {
     fn pull_force() -> Workflow {
         Workflow {
             name: "pull-force".to_string(),
-            description: "Force update: stash local changes → pull → pop (stop on conflict)".to_string(),
+            description: "Force update: fetch → scan → stash → pull → pop (stop on conflict)".to_string(),
             steps: vec![
                 WorkflowStep::Fetch {
                     jobs: Some(5),
                     timeout: Some(30),
+                },
+                WorkflowStep::Scan {
+                    output: OutputFormat::Terminal,
+                    open: false,
+                    only_dirty_or_behind: false,
                 },
                 WorkflowStep::PullForce {
                     jobs: Some(5),
@@ -392,11 +402,10 @@ pub fn open_report(path: &std::path::Path) -> anyhow::Result<()> {
 pub fn ensure_reports_dir(path: &std::path::Path) -> anyhow::Result<()> {
     let latest_link = PathBuf::from("reports/latest.html");
 
-    if let Err(e) = std::fs::remove_file(&latest_link) {
-        if e.kind() != std::io::ErrorKind::NotFound {
+    if let Err(e) = std::fs::remove_file(&latest_link)
+        && e.kind() != std::io::ErrorKind::NotFound {
             eprintln!("   Warning: Failed to delete old symlink: {}", e);
         }
-    }
 
     let path_str = path.to_string_lossy();
     let relative_path = path_str.to_string();

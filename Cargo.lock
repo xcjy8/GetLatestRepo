@@ -505,7 +505,6 @@ dependencies = [
  "git2",
  "indicatif",
  "libc",
- "once_cell",
  "regex",
  "rusqlite",
  "serde",
