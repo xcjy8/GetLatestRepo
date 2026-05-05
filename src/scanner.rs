@@ -163,6 +163,37 @@ impl Scanner {
         Ok(git_dirs)
     }
 
+    /// 在 needauth 目录下查找从指定路径移动过来的仓库（支持重命名）
+    ///
+    /// 通过读取 `.needauth_original_path` sidecar 文件来匹配原始相对路径。
+    fn find_moved_repo_in_needauth(root_path: &str, original_path: &str) -> Option<std::path::PathBuf> {
+        let needauth_dir = std::path::Path::new(root_path).join(crate::utils::NEEDAUTH_DIR);
+        if !needauth_dir.exists() {
+            return None;
+        }
+
+        let original_relative = std::path::Path::new(original_path)
+            .strip_prefix(root_path)
+            .unwrap_or(std::path::Path::new(original_path));
+
+        if let Ok(entries) = std::fs::read_dir(&needauth_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let sidecar = path.join(".needauth_original_path");
+                    if let Ok(content) = std::fs::read_to_string(&sidecar) {
+                        let content = content.trim();
+                        if content == original_relative.to_string_lossy() {
+                            return Some(path);
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
     /// Clean up repository records that no longer exist in the database
     fn cleanup_deleted_repos(
         db: &Database,
@@ -197,6 +228,17 @@ impl Scanner {
                     let mut updated = repo;
                     updated.path = needauth_path.to_string_lossy().to_string();
                     updated.root_path = std::path::Path::new(root_path).join(crate::utils::NEEDAUTH_DIR).to_string_lossy().to_string();
+                    if let Err(e) = db.upsert_repository(&mut updated) {
+                        eprintln!("Warning: failed to update moved repo record '{}': {}", updated.name, e);
+                    }
+                } else if let Some(moved_path) = Self::find_moved_repo_in_needauth(root_path, &repo.path) {
+                    // 仓库被重命名后移动到 needauth，通过 sidecar 文件定位
+                    let mut updated = repo;
+                    updated.path = moved_path.to_string_lossy().to_string();
+                    updated.root_path = std::path::Path::new(root_path).join(crate::utils::NEEDAUTH_DIR).to_string_lossy().to_string();
+                    updated.name = moved_path.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| updated.name.clone());
                     if let Err(e) = db.upsert_repository(&mut updated) {
                         eprintln!("Warning: failed to update moved repo record '{}': {}", updated.name, e);
                     }

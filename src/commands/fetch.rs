@@ -12,6 +12,7 @@ pub async fn execute(
     jobs: usize,
     timeout: u64,
     no_security_check: bool,
+    auto_skip_high_risk: bool,
     proxy_config: Option<ProxyConfig>,
 ) -> Result<()> {
     let (_config, db) = ensure_initialized()?;
@@ -34,7 +35,9 @@ pub async fn execute(
         timeout
     );
 
-    let mut fetcher = Fetcher::new(jobs, timeout).with_security_scan(!no_security_check);
+    let mut fetcher = Fetcher::new(jobs, timeout)
+        .with_security_scan(!no_security_check)
+        .with_auto_skip_high_risk(auto_skip_high_risk);
 
     if let Some(ref proxy) = proxy_config {
         if proxy.enabled {

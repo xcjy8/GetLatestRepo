@@ -82,6 +82,11 @@ impl Fetcher {
         self
     }
 
+    pub fn with_auto_skip_high_risk(mut self, enable: bool) -> Self {
+        self.auto_skip_high_risk = enable;
+        self
+    }
+
     pub fn with_proxy(mut self, proxy: ProxyConfig) -> Self {
         self.proxy = proxy;
         self
@@ -212,9 +217,15 @@ impl Fetcher {
     /// 2. Sequential confirm: prompt user for each risky repo (single-threaded stdin)
     pub async fn fetch_all_detailed(&self, repos: &[Repository], progress: bool) -> Vec<FetchExecutionResult> {
         // Phase 1: Concurrent security scan (no stdin interaction)
-        let rejected_paths = if self.security_scan && !self.auto_skip_high_risk {
+        let rejected_paths = if self.security_scan {
             let risky_paths = self.prescan_security_batch(repos).await;
-            Self::confirm_risky_repos(repos, &risky_paths)
+            if self.auto_skip_high_risk {
+                // 自动跳过高风险仓库，无需交互确认
+                risky_paths
+            } else {
+                // 交互式确认每个高风险仓库
+                Self::confirm_risky_repos(repos, &risky_paths)
+            }
         } else {
             HashSet::new()
         };
@@ -416,9 +427,8 @@ impl Fetcher {
                             .unwrap_or_else(|| std::path::PathBuf::from(&root_path));
                         needauth_parent.join(&repo_name)
                     };
-                    let needauth_parent = original_repo_path.parent()
-                        .map(|p| p.to_path_buf())
-                        .unwrap_or_else(|| std::path::PathBuf::from(&root_path));
+                    // needauth_parent 必须是扫描根目录，而非嵌套父目录，否则 root_path 会被错误记录
+                    let needauth_parent = std::path::PathBuf::from(&root_path);
                     
                     let from_path = original_path.clone();
                     let upstream = repo.upstream_url.clone();
@@ -438,9 +448,8 @@ impl Fetcher {
                     match restore_result {
                         Ok(restored_path) => {
                             let new_path = restored_path.to_string_lossy().to_string();
-                            let new_root = restored_path.parent()
-                                .map(|p| p.to_string_lossy().to_string())
-                                .unwrap_or_else(|| needauth_parent.to_string_lossy().to_string());
+                            // root_path 必须是原始扫描根目录，不能是嵌套父目录
+                            let new_root = root_path.clone();
                             let mut restored_repo = repo.with_new_path(new_path, new_root);
                             restored_repo.name = repo_name.clone();
 
@@ -523,18 +532,9 @@ impl Fetcher {
                             results.push(exec_result);
                         }
                         Err(e) => {
-                            eprintln!("  │   {} Task exception: {}", "⚠️".yellow(), e);
-                            // Create a failure result so the repo isn't silently lost
-                            results.push(FetchExecutionResult {
-                                original_repo: Repository::default(),
-                                current_repo: Repository::default(),
-                                success: false,
-                                error: Some(format!("Task panicked: {}", e)),
-                                duration_ms: 0,
-                                moved_to_needauth: false,
-                                retry_count: 0,
-                                restored_from_needauth: false,
-                            });
+                            eprintln!("  │   {} Task panicked: {}", "⚠️".yellow(), e);
+                            // Task panic 时不推入空记录，避免下游数据库操作使用空路径导致异常。
+                            // 统计信息在 fetch_and_update 中通过 repos.len() - results.len() 补偿。
                             if let Some(ref pb) = main_pb {
                                 pb.inc(1);
                             }
@@ -577,6 +577,58 @@ impl Fetcher {
         results
     }
 
+    /// 跨文件系统安全移动目录
+    ///
+    /// 先尝试 `fs::rename`（原子、高效），若因跨文件系统失败（EXDEV），
+    /// 则回退到复制后删除源目录。
+    fn move_or_copy_dir(from: &std::path::Path, to: &std::path::Path) -> Result<(), anyhow::Error> {
+        // 先尝试原子 rename
+        match std::fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
+                // 跨文件系统，继续回退逻辑
+            }
+            Err(e) => return Err(e.into()),
+        }
+
+        // 回退：复制目录树后删除源
+        #[cfg(unix)]
+        {
+            let status = std::process::Command::new("cp")
+                .args(["-a", &from.to_string_lossy(), &to.to_string_lossy()])
+                .status()
+                .with_context(|| format!("无法启动 cp -a 复制: {} -> {}", from.display(), to.display()))?;
+
+            if !status.success() {
+                return Err(anyhow::anyhow!(
+                    "cp -a 复制失败 (exit code: {:?}): {} -> {}",
+                    status.code(), from.display(), to.display()
+                ));
+            }
+
+            std::fs::remove_dir_all(from)
+                .with_context(|| format!("复制成功后无法删除源目录: {}", from.display()))?;
+        }
+
+        #[cfg(windows)]
+        {
+            let status = std::process::Command::new("robocopy")
+                .args([&from.to_string_lossy(), &to.to_string_lossy(), "/E", "/MOVE"])
+                .status()
+                .with_context(|| format!("无法启动 robocopy: {} -> {}", from.display(), to.display()))?;
+
+            // robocopy 退出码 0-7 表示成功
+            if status.code().unwrap_or(999) > 7 {
+                return Err(anyhow::anyhow!(
+                    "robocopy 失败 (exit code: {:?}): {} -> {}",
+                    status.code(), from.display(), to.display()
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Move repository to needauth directory
     ///
     /// Move from normal scan directory to `<root_path>/needauth/<repo_name>/`.
@@ -607,14 +659,9 @@ impl Fetcher {
         // ── Path traversal protection ────────────────────────────────────────────────
         // Ensure `to` path is within expected needauth directory, prevent ../../../etc attacks
         // 1. First verify target path doesn't contain path traversal components
-        let to_str = to.to_string_lossy();
-        if to_str.contains("..") || to_str.contains("//") {
-            return Err(anyhow::anyhow!(
-                "Path traversal detected: target path '{}' contains illegal components",
-                to.display()
-            ));
-        }
-        
+        // 前置路径遍历检查已移除：canonicalize + starts_with 后续会提供完整防护，
+        // 且 contains("..") 无法防御 Unicode 编码绕过（如 %2e%2e），还可能误报合法路径（如 foo..bar）。
+
         // 2. Ensure parent directory exists and is resolvable (create before move)
         let parent = to.parent()
             .ok_or_else(|| anyhow::anyhow!("Target path has no parent directory: {}", to.display()))?;
@@ -719,17 +766,17 @@ impl Fetcher {
         }
 
         // Execute move
-        if let Err(e) = fs::rename(from, &final_to) {
+        if let Err(e) = Self::move_or_copy_dir(Path::new(from), &final_to) {
             // If move fails, try to restore original target from temp
             if !tmp_path.as_os_str().is_empty()
-                && let Err(restore_err) = fs::rename(&tmp_path, &final_to) {
+                && let Err(restore_err) = Self::move_or_copy_dir(&tmp_path, &final_to) {
                     return Err(anyhow::anyhow!(
-                        "CRITICAL: Unable to move repository to '{}': {}. Additionally, restoring the original target from temp '{}' failed: {}. Original data may be at '{}'.",
+                        "严重错误：无法将仓库移动到 '{}': {}。此外，从临时位置 '{}' 恢复原始目标也失败: {}。原始数据可能位于 '{}'。",
                         final_to.display(), e, tmp_path.display(), restore_err, tmp_path.display()
                     ));
                 }
             return Err(anyhow::anyhow!(
-                "Unable to move repository to '{}': {}",
+                "无法将仓库移动到 '{}': {}",
                 final_to.display(),
                 e
             ));
@@ -770,13 +817,8 @@ impl Fetcher {
         let from_path = Path::new(from);
 
         // ── Path traversal protection ────────────────────────────────────────────────
-        let to_str = to.to_string_lossy();
-        if to_str.contains("..") || to_str.contains("//") {
-            return Err(anyhow::anyhow!(
-                "Path traversal detected: target path '{}' contains illegal components",
-                to.display()
-            ));
-        }
+        // 前置路径遍历检查已移除：canonicalize + starts_with 后续会提供完整防护，
+        // 且 contains("..") 无法防御 Unicode 编码绕过（如 %2e%2e），还可能误报合法路径（如 foo..bar）。
 
         let parent = to.parent()
             .ok_or_else(|| anyhow::anyhow!("Target path has no parent directory: {}", to.display()))?;
@@ -934,14 +976,21 @@ impl Fetcher {
 
     /// Get remote branch OID
     fn get_remote_oid(repo: &git2::Repository) -> Result<Option<git2::Oid>, anyhow::Error> {
-        let branch_names = ["origin/HEAD", "origin/main", "origin/master", "origin/develop"];
-        
+        let remote_name = GitOps::get_remote_name(repo).ok().flatten()
+            .unwrap_or_else(|| "origin".to_string());
+        let branch_names = [
+            format!("{}/HEAD", remote_name),
+            format!("{}/main", remote_name),
+            format!("{}/master", remote_name),
+            format!("{}/develop", remote_name),
+        ];
+
         for branch_name in &branch_names {
             if let Ok(reference) = repo.find_reference(&format!("refs/remotes/{}", branch_name)) {
                 return Ok(reference.target());
             }
         }
-        
+
         Ok(None)
     }
 
@@ -970,6 +1019,13 @@ impl Fetcher {
             summary.total += 1;
         }
 
+        // 补偿因 panic 或其他原因未返回结果的仓库数量
+        let missing_count = repos.len().saturating_sub(exec_results.len());
+        if missing_count > 0 {
+            summary.failed += missing_count;
+            summary.total += missing_count;
+        }
+
         summary.results = exec_results.iter().map(|r| r.to_model()).collect();
 
         // Opens its own DB connection because Database is not Send + 'static.
@@ -978,6 +1034,11 @@ impl Fetcher {
             let db = Database::open()
                 .map_err(|e| { eprintln!("Failed to open database for fetch update: {}", e); e })?;
             for exec_result in exec_results {
+                // 防御性过滤：跳过空路径记录（通常由 task panic 导致）
+                if exec_result.current_repo.path.is_empty() {
+                    eprintln!("Warning: 跳过空路径记录（task 可能 panic），避免污染数据库");
+                    continue;
+                }
                 if exec_result.success
                     && let Err(e) = db.update_fetch_time(exec_result.db_path()) {
                         eprintln!("Update fetch time failed '{}': {}", crate::utils::sanitize_path(exec_result.db_path()), e);
@@ -1027,8 +1088,10 @@ impl Fetcher {
         let mut updated_repos = Vec::new();
         
         // 构建从原始路径到执行结果的映射，用于快速查找
+        // 防御性过滤：排除空路径记录（通常由 task panic 导致），避免 map 键冲突
         let result_map: std::collections::HashMap<String, &FetchExecutionResult> = exec_results
             .iter()
+            .filter(|r| !r.original_repo.path.is_empty())
             .map(|r| (r.original_repo.path.clone(), r))
             .collect();
         

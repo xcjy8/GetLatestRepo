@@ -356,10 +356,17 @@ impl Database {
 
     /// Atomically move repository record (delete old path, insert new path)
     pub fn move_repository(&self, old_path: &str, repo: &mut Repository) -> Result<()> {
+        // 防御性检查：确保当前不在事务中，避免嵌套事务导致不可预期行为
+        if !self.conn.is_autocommit() {
+            anyhow::bail!("Cannot move repository while already in a transaction");
+        }
         // Use immediate_transaction to ensure correct behavior under WAL mode
-        // Use unchecked_transaction because rusqlite requires &mut self for transaction().
+        // Use new_unchecked because rusqlite requires &mut self for transaction().
         // This is safe here because there are no nested transactions in the current call graph.
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
         
         // Delete old record
         tx.execute(

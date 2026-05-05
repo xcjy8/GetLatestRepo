@@ -169,6 +169,38 @@ impl GitOps {
         Ok(None)
     }
 
+    /// 从当前分支的上游跟踪引用解析远程名称
+    ///
+    /// 例如：对于上游引用 `refs/remotes/origin/main`，返回 `"origin"`。
+    /// 如果分支没有上游跟踪引用，返回 `None`（调用方可回退到默认 `"origin"`）。
+    pub(crate) fn get_remote_name(repo: &GitRepository) -> Result<Option<String>> {
+        let branch = match Self::get_current_branch(repo)? {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+
+        let local_branch = match repo.find_branch(&branch, BranchType::Local) {
+            Ok(b) => b,
+            Err(_) => return Ok(None),
+        };
+
+        let upstream = match local_branch.upstream() {
+            Ok(u) => u,
+            Err(_) => return Ok(None),
+        };
+
+        let upstream_ref_str = upstream.get().name().unwrap_or_default();
+
+        if upstream_ref_str.starts_with("refs/remotes/") {
+            let parts: Vec<&str> = upstream_ref_str.split('/').collect();
+            if parts.len() >= 3 {
+                return Ok(Some(parts[2].to_string()));
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Check for uncommitted local changes (returns detailed change info)
     fn check_dirty(repo: &GitRepository) -> Result<(bool, Vec<crate::models::FileChange>)> {
         let mut opts = StatusOptions::new();
@@ -324,7 +356,10 @@ impl GitOps {
 
         let time = commit.time();
         let dt = chrono::DateTime::from_timestamp(time.seconds(), 0)
-            .map(|dt| dt.with_timezone(&chrono::Local));
+            .and_then(|dt| {
+                chrono::FixedOffset::east_opt(time.offset_minutes() * 60)
+                    .map(|offset| dt.with_timezone(&offset).with_timezone(&chrono::Local))
+            });
 
         let message = commit.message()
             .map(|m| m.trim().to_string());
@@ -341,9 +376,15 @@ impl GitOps {
     /// 原生 git 会读取 ~/.ssh/config、使用 ssh-agent、支持 credential-helper，
     /// 且可以通过 child.kill() 在超时后强制终止。
     fn fetch_with_git_command(&self, path: &Path, timeout_secs: u64) -> FetchStatus {
+        let remote_name = match Self::open(path) {
+            Ok(repo) => Self::get_remote_name(&repo).ok().flatten()
+                .unwrap_or_else(|| "origin".to_string()),
+            Err(_) => "origin".to_string(),
+        };
+
         let mut cmd = std::process::Command::new("git");
         cmd.arg("-C").arg(path)
-            .args(["fetch", "origin"])
+            .args(["fetch", &remote_name])
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_HTTP_LOW_SPEED_TIME", "10")
             .env("GIT_HTTP_LOW_SPEED_LIMIT", "1000")
@@ -506,8 +547,11 @@ impl GitOps {
             None => return Err(crate::error::GetLatestRepoError::DetachedHead),
         };
 
+        // 动态解析远程名称，避免硬编码 "origin"
+        let remote_name = Self::get_remote_name(&repo)?.unwrap_or_else(|| "origin".to_string());
+
         // Check if remote branch exists
-        let remote_branch = format!("origin/{}", branch_name);
+        let remote_branch = format!("{}/{}", remote_name, branch_name);
         let remote_ref_name = format!("refs/remotes/{}", remote_branch);
 
         let remote_ref = match repo.find_reference(&remote_ref_name) {
@@ -549,31 +593,78 @@ impl GitOps {
         // Update ref first, then checkout. If checkout fails, rollback the ref.
         // This ensures the ref always points to a valid commit.
         local_ref.set_target(remote_oid, "pull-safe: fast-forward")
-            .map_err(|e| GetLatestRepoError::Other(anyhow::anyhow!("Update local branch reference failed: {}", e)))?;
+            .map_err(|e| GetLatestRepoError::Other(anyhow::anyhow!("更新本地分支引用失败: {}", e)))?;
 
-        if let Err(e) = repo.checkout_tree(&remote_obj, None) {
+        // 显式使用 SAFE 策略，避免依赖 libgit2 默认行为
+        let mut checkout_opts = git2::build::CheckoutBuilder::new();
+        checkout_opts.safe();
+
+        if let Err(e) = repo.checkout_tree(&remote_obj, Some(&mut checkout_opts)) {
             // Rollback: restore ref to original OID
             if let Err(e2) = local_ref.set_target(original_oid, "pull-safe: rollback failed checkout") {
                 return Err(GetLatestRepoError::Other(anyhow::anyhow!(
-                    "CRITICAL: Checkout failed ({}), and rollback ref also failed ({}). Repository may be in an inconsistent state.",
+                    "严重错误：检出失败 ({}), 回滚引用也失败 ({})。仓库可能处于不一致状态。",
                     e, e2
                 )));
             }
-            // Restore working directory to original state
+            // Restore working directory to original state (force 策略确保回滚成功)
             let original_obj = repo.find_object(original_oid, None)
                 .map_err(|e3| GetLatestRepoError::Other(anyhow::anyhow!(
-                    "CRITICAL: Cannot find original commit object for working directory restore: {}", e3
+                    "严重错误：无法找到原始提交对象用于工作目录恢复: {}", e3
                 )))?;
-            if let Err(e3) = repo.checkout_tree(&original_obj, None) {
+            let mut rollback_opts = git2::build::CheckoutBuilder::new();
+            rollback_opts.force();
+            if let Err(e3) = repo.checkout_tree(&original_obj, Some(&mut rollback_opts)) {
                 return Err(GetLatestRepoError::Other(anyhow::anyhow!(
-                    "CRITICAL: Checkout failed ({}), ref rolled back but working directory restore also failed ({}). Repository may be in an inconsistent state.",
+                    "严重错误：检出失败 ({}), 引用已回滚但工作目录恢复也失败 ({})。仓库可能处于不一致状态。",
                     e, e3
                 )));
             }
             return Err(GetLatestRepoError::Other(anyhow::anyhow!(
-                "Checkout remote changes failed: {}. Branch reference and working directory have been restored to the original state.",
+                "检出远程变更失败: {}。分支引用和工作目录已恢复至原始状态。",
                 e
             )));
+        }
+
+        // 二次验证：检出后工作区是否真正同步
+        let (is_dirty_after, _) = Self::check_dirty(&repo)?;
+        if is_dirty_after {
+            // Auto-repair：尝试强制重置到 HEAD
+            let head = repo.head().map_err(|e| GetLatestRepoError::Other(anyhow::anyhow!(
+                "Fast-forward 后检测到工作区残留差异，但获取 HEAD 失败: {}", e
+            )))?;
+            let head_commit = head.peel_to_commit().map_err(|e| GetLatestRepoError::Other(anyhow::anyhow!(
+                "Fast-forward 后检测到工作区残留差异，但解析 HEAD 提交失败: {}", e
+            )))?;
+            let mut hard_opts = git2::build::CheckoutBuilder::new();
+            hard_opts.force();
+            if let Err(e) = repo.reset(head_commit.as_object(), git2::ResetType::Hard, Some(&mut hard_opts)) {
+                // hard-reset 失败，回滚 ref
+                if let Err(e2) = local_ref.set_target(original_oid, "pull-safe: rollback after hard-reset failed") {
+                    return Err(GetLatestRepoError::Other(anyhow::anyhow!(
+                        "严重错误：检出不完整且强制重置失败 ({}), 回滚引用也失败 ({})。仓库可能处于不一致状态。",
+                        e, e2
+                    )));
+                }
+                return Err(GetLatestRepoError::Other(anyhow::anyhow!(
+                    "检出远程变更不完整，强制重置失败: {}。分支引用已恢复至原始状态。",
+                    e
+                )));
+            }
+
+            // 再次验证
+            let (still_dirty, _) = Self::check_dirty(&repo)?;
+            if still_dirty {
+                if let Err(e2) = local_ref.set_target(original_oid, "pull-safe: rollback after checkout incomplete") {
+                    return Err(GetLatestRepoError::Other(anyhow::anyhow!(
+                        "严重错误：检出不完整且强制重置后仍有差异，回滚引用也失败 ({})。仓库可能处于不一致状态。",
+                        e2
+                    )));
+                }
+                return Err(GetLatestRepoError::Other(anyhow::anyhow!(
+                    "检出远程变更不完整：强制重置后工作区仍存在差异。分支引用已恢复至原始状态。",
+                )));
+            }
         }
 
         Ok(())
@@ -609,7 +700,8 @@ impl GitOps {
                 None => return Err(GetLatestRepoError::DetachedHead),
             };
             {
-                let remote_branch = format!("origin/{}", branch_name);
+                let remote_name = Self::get_remote_name(&repo)?.unwrap_or_else(|| "origin".to_string());
+                let remote_branch = format!("{}/{}", remote_name, branch_name);
                 let remote_ref = repo.find_reference(&format!("refs/remotes/{}", remote_branch))?;
                 let remote_oid = remote_ref.target().context("无法获取远程分支 OID")?;
                 
@@ -639,7 +731,9 @@ impl GitOps {
                 local_ref.set_target(remote_oid, "pull-force: fast-forward")
                     .map_err(|e| GetLatestRepoError::Other(anyhow::anyhow!("更新本地分支引用失败: {}", e)))?;
 
-                if let Err(e) = repo.checkout_tree(&remote_obj, None) {
+                let mut checkout_opts = git2::build::CheckoutBuilder::new();
+                checkout_opts.safe();
+                if let Err(e) = repo.checkout_tree(&remote_obj, Some(&mut checkout_opts)) {
                     // Rollback: restore ref to original OID
                     if let Err(e2) = local_ref.set_target(original_oid, "pull-force: rollback failed checkout") {
                         return Err(GetLatestRepoError::Other(anyhow::anyhow!(
@@ -651,6 +745,43 @@ impl GitOps {
                         "检出远程变更失败: {}。分支引用已恢复至原始状态。",
                         e
                     )));
+                }
+
+                // 二次验证：检出后工作区是否真正同步
+                let (is_dirty_after, _) = Self::check_dirty(&repo)?;
+                if is_dirty_after {
+                    let head = repo.head().map_err(|e| GetLatestRepoError::Other(anyhow::anyhow!(
+                        "Fast-forward 后检测到工作区残留差异，但获取 HEAD 失败: {}", e
+                    )))?;
+                    let head_commit = head.peel_to_commit().map_err(|e| GetLatestRepoError::Other(anyhow::anyhow!(
+                        "Fast-forward 后检测到工作区残留差异，但解析 HEAD 提交失败: {}", e
+                    )))?;
+                    let mut hard_opts = git2::build::CheckoutBuilder::new();
+                    hard_opts.force();
+                    if let Err(e) = repo.reset(head_commit.as_object(), git2::ResetType::Hard, Some(&mut hard_opts)) {
+                        if let Err(e2) = local_ref.set_target(original_oid, "pull-force: rollback after hard-reset failed") {
+                            return Err(GetLatestRepoError::Other(anyhow::anyhow!(
+                                "严重错误：检出不完整且强制重置失败 ({}), 回滚引用也失败 ({})。仓库可能处于不一致状态。",
+                                e, e2
+                            )));
+                        }
+                        return Err(GetLatestRepoError::Other(anyhow::anyhow!(
+                            "检出远程变更不完整，强制重置失败: {}。分支引用已恢复至原始状态。",
+                            e
+                        )));
+                    }
+                    let (still_dirty, _) = Self::check_dirty(&repo)?;
+                    if still_dirty {
+                        if let Err(e2) = local_ref.set_target(original_oid, "pull-force: rollback after checkout incomplete") {
+                            return Err(GetLatestRepoError::Other(anyhow::anyhow!(
+                                "严重错误：检出不完整且强制重置后仍有差异，回滚引用也失败 ({})。仓库可能处于不一致状态。",
+                                e2
+                            )));
+                        }
+                        return Err(GetLatestRepoError::Other(anyhow::anyhow!(
+                            "检出远程变更不完整：强制重置后工作区仍存在差异。分支引用已恢复至原始状态。",
+                        )));
+                    }
                 }
             }
             Ok(())
@@ -724,18 +855,18 @@ impl GitOps {
     pub fn get_recent_commits(path: &Path, count: usize) -> Result<Vec<String>> {
         let repo = Self::open(path)?;
         let mut commits = Vec::new();
-        
+
         let mut revwalk = repo.revwalk()?;
         revwalk.push_head()?;
-        
+
         for oid in revwalk.take(count) {
             let oid = oid?;
             let commit = repo.find_commit(oid)?;
-            
+
             let msg = commit.message()
                 .map(|m| m.lines().next().unwrap_or(m).to_string())
                 .unwrap_or_else(|| "(no message)".to_string());
-            
+
             let oid_str = oid.to_string();
             let short_id = if oid_str.len() >= 7 {
                 &oid_str[..7]
@@ -744,7 +875,46 @@ impl GitOps {
             };
             commits.push(format!("{} {}", short_id.dimmed(), msg));
         }
-        
+
+        Ok(commits)
+    }
+
+    /// 获取从指定 OID（不包含）到 HEAD 的所有提交
+    ///
+    /// 用于 `diff_after` 精确显示本次 pull 新增的提交，而非 HEAD 最近 N 条。
+    pub fn get_commits_since(path: &Path, since_oid: git2::Oid) -> Result<Vec<String>> {
+        let repo = Self::open(path)?;
+        let head_oid = repo.head()?.target()
+            .ok_or_else(|| GetLatestRepoError::Other(anyhow::anyhow!("HEAD 没有目标提交")))?;
+
+        // 如果 since_oid 就是 HEAD，说明没有新提交
+        if since_oid == head_oid {
+            return Ok(Vec::new());
+        }
+
+        let mut commits = Vec::new();
+        let mut revwalk = repo.revwalk()?;
+        revwalk.push_head()?;
+
+        for oid_result in revwalk {
+            let oid = oid_result?;
+            // 到达 since_oid 时停止（不包含 since_oid）
+            if oid == since_oid {
+                break;
+            }
+            let commit = repo.find_commit(oid)?;
+            let msg = commit.message()
+                .map(|m| m.lines().next().unwrap_or(m).to_string())
+                .unwrap_or_else(|| "(no message)".to_string());
+            let oid_str = oid.to_string();
+            let short_id = if oid_str.len() >= 7 {
+                &oid_str[..7]
+            } else {
+                &oid_str
+            };
+            commits.push(format!("{} {}", short_id.dimmed(), msg));
+        }
+
         Ok(commits)
     }
 
@@ -808,7 +978,8 @@ impl GitOps {
         };
 
         // Get current remote HEAD
-        let remote_ref_name = format!("refs/remotes/origin/{}", branch_name);
+        let remote_name = Self::get_remote_name(&repo)?.unwrap_or_else(|| "origin".to_string());
+        let remote_ref_name = format!("refs/remotes/{}/{}", remote_name, branch_name);
         let current_oid = match repo.find_reference(&remote_ref_name) {
             Ok(r) => match r.target() {
                 Some(oid) => oid,
@@ -1120,5 +1291,52 @@ mod tests {
             err_msg.contains("无法快进合并") || err_msg.contains("分叉") || err_msg.contains("未推送"),
             "Error message should mention fast-forward or diverged, got: {}", err_msg
         );
+    }
+
+    /// 验证 checkout_tree SAFE 策略跳过冲突文件后，auto-repair 能强制同步
+    #[test]
+    fn test_pull_ff_only_auto_repair_skipped_files() {
+        let (_tmp, path, c1) = create_repo_with_tracking();
+        let repo = git2::Repository::open(&path).unwrap();
+        let sig = git2::Signature::now("test", "test@test.com").unwrap();
+
+        // 提交 B：添加 new.txt
+        let new_file_path = path.join("new.txt");
+        std::fs::write(&new_file_path, "remote content").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("new.txt")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let c1_commit = repo.find_commit(c1).unwrap();
+        let c2 = repo.commit(Some("HEAD"), &sig, &sig, "add new file", &tree, &[&c1_commit]).unwrap();
+
+        // 回退 HEAD 到 A（模拟本地落后）
+        repo.reset(c1_commit.as_object(), git2::ResetType::Hard, None).unwrap();
+        assert!(!new_file_path.exists(), "new.txt should be removed after reset to A");
+
+        // 设置远程引用指向 B
+        move_tracking_ref(&path, c2);
+
+        // 在工作区创建一个未跟踪的 new.txt（与 B 中的内容不同）
+        // 这会触发 checkout_tree SAFE 策略跳过 new.txt 的检出
+        std::fs::write(&new_file_path, "untracked local content").unwrap();
+
+        // 调用 pull_ff_only：checkout_tree 会跳过 new.txt，但 auto-repair 应强制同步
+        let result = GitOps::pull_ff_only(&path);
+        assert!(result.is_ok(), "Expected success with auto-repair, got: {:?}", result);
+
+        // 验证工作区是干净的
+        let repo_after = git2::Repository::open(&path).unwrap();
+        let (is_dirty, _) = GitOps::check_dirty(&repo_after).unwrap();
+        assert!(!is_dirty, "Expected clean working directory after auto-repair");
+
+        // 验证 new.txt 的内容与 B 中的一致
+        let content = std::fs::read_to_string(&new_file_path).unwrap();
+        assert_eq!(content, "remote content", "new.txt should be updated to remote version after auto-repair");
+
+        // 验证 HEAD 指向 B
+        let head_oid = repo_after.head().unwrap().target().unwrap();
+        assert_eq!(head_oid, c2, "HEAD should point to remote commit after pull");
     }
 }

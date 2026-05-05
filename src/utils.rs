@@ -17,8 +17,6 @@ pub const DEFAULT_MAX_CONCURRENT_SCAN: usize = 8;
 pub const CONCURRENT_OVERALL_TIMEOUT_SECS: u64 = 120;
 /// Per-recv timeout for concurrent execution (seconds)
 pub const CONCURRENT_RECV_TIMEOUT_SECS: u64 = 30;
-/// Join deadline for concurrent execution (seconds)
-pub const CONCURRENT_JOIN_TIMEOUT_SECS: u64 = 30;
 
 /// Max file size for security scan (1MB)
 pub const SECURITY_MAX_FILE_SIZE: usize = 1024 * 1024;

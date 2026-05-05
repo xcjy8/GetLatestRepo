@@ -38,20 +38,21 @@ static CODE_EXTENSIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
 
 /// Pre-compiled suspicious code patterns (global cache, avoid repeated compilation)
 static SUSPICIOUS_PATTERNS: LazyLock<Vec<(regex::Regex, &'static str)>> = LazyLock::new(|| {
+    // 使用有限量词（如 {0,200}）替代 .* / \s*，显著降低 ReDoS 回溯风险
     let raw: &[(&str, &str)] = &[
-        (r"eval\s*\(", "eval function call"),
-        (r"exec\s*\(", "exec function call"),
-        (r"system\s*\(", "system function call"),
+        (r"eval\s{0,20}\(", "eval function call"),
+        (r"exec\s{0,20}\(", "exec function call"),
+        (r"system\s{0,20}\(", "system function call"),
         (r"os\.system", "os.system call"),
         (r"subprocess\.call", "subprocess call"),
         (r"Runtime\.getRuntime\(\)\.exec", "Java Runtime exec"),
         (r"child_process", "Node.js child_process"),
-        (r"\bbase64\b.*\bdecode\b", "Base64 decode (may hide malicious code)"),
-        (r"http://.*\.onion", "Dark web address"),
+        (r"\bbase64\b.{0,200}\bdecode\b", "Base64 decode (may hide malicious code)"),
+        (r"http://[^\s]{0,200}\.onion", "Dark web address"),
         (r"wget\s+http", "wget download"),
-        (r"curl\s+.*\|.*sh", "curl pipe to shell"),
-        (r"fetch\(.*\.txt\).*eval", "fetch text and eval"),
-        (r"document\.write.*unescape", "document.write + unescape"),
+        (r"curl\s+\S{0,200}\|\S{0,200}sh", "curl pipe to shell"),
+        (r"fetch\([^)]{0,200}\.txt\)[^)]{0,200}eval", "fetch text and eval"),
+        (r"document\.write.{0,200}unescape", "document.write + unescape"),
         (r"fromCharCode", "String.fromCharCode (possible obfuscation)"),
     ];
     raw.iter()
@@ -296,8 +297,12 @@ impl SecurityScanner {
                         // Glob pattern: match by extension suffix
                         path_str.ends_with(suffix)
                     } else {
-                        // Literal substring match
-                        path_str.contains(pattern)
+                        // 路径组件精确匹配：避免子串误报（如 my-Cargo.toml 不匹配 Cargo.toml）
+                        let pattern_components: Vec<&str> = pattern.split('/').collect();
+                        let path_components: Vec<&str> = path_str.split('/').collect();
+                        pattern_components.len() <= path_components.len()
+                            && path_components.windows(pattern_components.len())
+                                .any(|window| window == pattern_components.as_slice())
                     };
                     if matched {
                         modified_sensitive_files.push(path_str.to_string());

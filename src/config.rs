@@ -75,6 +75,15 @@ impl Default for AppConfig {
 impl AppConfig {
     /// Get config directory
     pub fn config_dir() -> Result<PathBuf> {
+        // 优先通过环境变量覆盖配置目录，便于测试隔离
+        if let Ok(env_dir) = std::env::var("GETLATESTREPO_CONFIG_DIR") {
+            let path = PathBuf::from(env_dir);
+            if !path.exists() {
+                std::fs::create_dir_all(&path)
+                    .with_context(|| format!("Failed to create config directory: {}", path.display()))?;
+            }
+            return Ok(path);
+        }
         let dir = dirs::config_dir()
             .context("Unable to get config directory")?
             .join("getlatestrepo");

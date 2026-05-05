@@ -296,6 +296,7 @@ pub struct PullForceResult {
     pub success_count: usize,
     pub failed_count: usize,
     pub conflict_repos: Vec<ConflictInfo>,
+    pub pulled_repos: Vec<(String, Vec<String>)>, // (repository name, new commit list)
 }
 
 impl PullForceResult {
@@ -305,6 +306,7 @@ impl PullForceResult {
             success_count: 0,
             failed_count: 0,
             conflict_repos: Vec::new(),
+            pulled_repos: Vec::new(),
         }
     }
 

@@ -2,6 +2,38 @@
 
 ---
 
+## [0.1.7] - 2026-05-05
+
+> 全量缺陷修复与安全加固（20 项 P0/P1/Warn 级别修复）
+
+### Fixed
+
+- **P0-1 checkout_tree 静默跳过**: `pull_ff_only` 增加 SAFE checkout 二次验证 + hard-reset 补刀，失败回滚 ref
+- **P0-2 panic 空记录**: panic 分支不再使用 `Repository::default()`，保留原始 repo 信息
+- **P1-3 硬编码 "origin"**: 新增 `GitOps::get_remote_name()` 从上游跟踪引用动态解析远程名
+- **P1-4 auto_skip_high_risk 语义反向**: 修正为 `true` 时自动扫描并跳过（不交互），新增 CLI `--auto-skip-high-risk`
+- **P1-5 报告格式不一致**: `only_dirty_or_behind=true` 时 Terminal/HTML/Markdown 统一使用过滤后的 `report_repos`
+- **P1-6 diff_after 显示错误**: 新增 `GitOps::get_commits_since(original_oid)`，pull 前记录原始 OID，成功后精确显示新增提交
+- **P1-7 needauth 重命名误判删除**: `cleanup_deleted_repos` 通过 `.needauth_original_path` sidecar 文件定位重命名仓库
+- **P1-8 跨文件系统移动失败**: 新增 `Fetcher::move_or_copy_dir()`，`EXDEV` 回退到 `cp -a` (Unix) / `robocopy /MOVE` (Windows)
+- **P1-9 敏感文件匹配过于宽松**: `path_str.contains(pattern)` 改为路径组件精确匹配
+- **P1-10 Windows PID 文件锁 TOCTOU**: `Drop` 仅当 PID 匹配才删除；stale lock 3 次重试；`is_process_running` 增加进程名校验
+- **Warn-11 spawn_blocking 超时**: `inspect`、`check_pull_safety`、`get_commits_since` 全部包装 `tokio::time::timeout(30s)`
+- **Warn-12 unchecked_transaction**: rusqlite 升级至 0.32，全部替换为 `immediate_transaction()`
+- **Warn-13 git 时区偏移**: `get_last_commit_info` 使用 `time.offset_minutes()` 正确构造 `FixedOffset`
+- **Warn-14 忙等+线程泄漏**: `concurrent.rs` 添加 join deadline 防止 hang
+- **Warn-16 pull_force 冲突后 DB 未刷新**: `execute_pull_force` 结束后对冲突仓库也执行 `inspect` + `upsert_repository`
+- **Warn-17 ReDoS**: `SUSPICIOUS_PATTERNS` 中所有 `.*` / `\s*` 改为有限量词（`\s{0,20}` 等）
+- **Warn-18 路径遍历 Unicode 绕过**: 移除 `contains("..")` 前置检查，完全依赖 `canonicalize` + `starts_with`
+
+### Changed
+
+- **config remove 路径 canonicalize**: `config remove` 时对输入路径先 `canonicalize`，匹配 `config add` 存储格式
+- **配置目录环境变量支持**: `config_dir()` 优先读取 `GETLATESTREPO_CONFIG_DIR`，便于测试隔离
+- **集成测试环境隔离**: `scripts/test-all.sh` 使用临时 `GETLATESTREPO_CONFIG_DIR`，在测试目录内初始化真实 Git 仓库
+
+---
+
 ## [0.1.6] - 2026-05-05
 
 > Rust Edition 2024 升级、死代码清理与安全扫描前置

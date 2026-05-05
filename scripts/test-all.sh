@@ -38,9 +38,26 @@ run_test() {
 # Ensure we are in the correct directory
 cd "$(dirname "$0")/.."
 
+# 使用临时配置目录隔离测试环境
+export GETLATESTREPO_CONFIG_DIR="/tmp/rg-test-config-$$"
+mkdir -p "$GETLATESTREPO_CONFIG_DIR"
+
 # Clean previous test data
 echo "Cleaning test environment..."
-rm -rf /tmp/rg-test-dir /tmp/rg-init-test 2>/dev/null || true
+rm -rf /tmp/rg-test-dir /tmp/rg-init-test /tmp/test-repos 2>/dev/null || true
+
+# 创建测试目录并在其中初始化 Git 仓库（供 workflow check 扫描）
+mkdir -p /tmp/rg-test-dir
+if [ ! -d /tmp/rg-test-dir/.git ]; then
+    git init /tmp/rg-test-dir >/dev/null 2>&1
+    cd /tmp/rg-test-dir
+    git config user.email "test@test.com"
+    git config user.name "Test"
+    touch README.md
+    git add README.md >/dev/null 2>&1
+    git commit -m "init" >/dev/null 2>&1
+    cd - >/dev/null
+fi
 
 echo "1. Basic command tests"
 echo "----------------------"
@@ -52,9 +69,6 @@ echo "2. config command tests"
 echo "-----------------------"
 run_test "config list" "$GETLATESTREPO config list"
 run_test "config path" "$GETLATESTREPO config path"
-
-# Create test directory
-mkdir -p /tmp/rg-test-dir
 run_test "config add" "$GETLATESTREPO config add /tmp/rg-test-dir"
 run_test "config add (duplicate)" "$GETLATESTREPO config add /tmp/rg-test-dir && false || true"  # Should fail
 run_test "config ignore" "$GETLATESTREPO config ignore '*.log,*.tmp'"
@@ -68,6 +82,11 @@ run_test "init" "$GETLATESTREPO init /tmp/rg-init-test"
 echo ""
 echo "4. status command tests"
 echo "-----------------------"
+# 创建测试用 Git 仓库
+mkdir -p /tmp/test-repos/project-a
+if [ ! -d /tmp/test-repos/project-a/.git ]; then
+    git init /tmp/test-repos/project-a >/dev/null 2>&1
+fi
 run_test "status (valid repo)" "$GETLATESTREPO status /tmp/test-repos/project-a"
 run_test "status (invalid path)" "$GETLATESTREPO status /nonexistent && false || true"  # Should fail
 
@@ -93,7 +112,7 @@ echo "----------------"
 run_test "config remove" "$GETLATESTREPO config remove /tmp/rg-test-dir"
 
 # Cleanup
-rm -rf /tmp/rg-test-dir /tmp/rg-init-test
+rm -rf /tmp/rg-test-dir /tmp/rg-init-test /tmp/test-repos "$GETLATESTREPO_CONFIG_DIR"
 
 echo ""
 echo "=========================================="

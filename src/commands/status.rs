@@ -13,10 +13,17 @@ pub async fn execute(path: PathBuf, show_diff: bool, issues: bool) -> Result<()>
     let db = Database::open()?;
     
     if issues {
-        let repos = tokio::task::spawn_blocking(move || {
-            db.list_repositories()
-        }).await
-            .map_err(|e| anyhow::anyhow!("Failed to list repositories: {}", e))??;
+        let repos = match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            tokio::task::spawn_blocking(move || {
+                db.list_repositories()
+            })
+        ).await {
+            Ok(Ok(Ok(repos))) => repos,
+            Ok(Ok(Err(e))) => return Err(e),
+            Ok(Err(_)) => anyhow::bail!("Database query task panicked"),
+            Err(_) => anyhow::bail!("Database query timed out (30s)"),
+        };
         if repos.is_empty() {
             println!("{} 暂无仓库记录，请先执行 scan 命令", "ℹ".blue());
             return Ok(());

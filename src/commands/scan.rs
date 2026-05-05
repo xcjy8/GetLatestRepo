@@ -24,6 +24,7 @@ pub async fn execute(
     depth: Option<usize>,
     jobs: usize,
     no_security_check: bool,
+    auto_skip_high_risk: bool,
 ) -> Result<()> {
     let start = Instant::now();
 
@@ -56,7 +57,9 @@ pub async fn execute(
     // Optional: fetch all repositories first
     let repos = if should_fetch {
         println!("\n{} Starting fetch all repositories...", "▶".cyan());
-        let fetcher = Fetcher::new(jobs, 30).with_security_scan(!no_security_check);
+        let fetcher = Fetcher::new(jobs, 30)
+            .with_security_scan(!no_security_check)
+            .with_auto_skip_high_risk(auto_skip_high_risk);
         fetcher.fetch_and_rescan(&repos, &db, true).await?
     } else {
         repos

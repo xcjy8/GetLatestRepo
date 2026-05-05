@@ -35,9 +35,15 @@ pub struct ProcessLock {
 #[cfg(not(unix))]
 impl Drop for ProcessLock {
     fn drop(&mut self) {
-        // Windows: clean up PID file
-        if let Err(e) = std::fs::remove_file(&self.pid_path) {
-            eprintln!("Warning: unable to clean up PID file '{}': {}", self.pid_path.display(), e);
+        // Windows: 仅当 PID 文件内容匹配当前进程时才删除，避免竞态下误删其他实例的锁
+        if let Ok(content) = std::fs::read_to_string(&self.pid_path) {
+            if let Ok(pid) = content.trim().parse::<u32>() {
+                if pid == std::process::id() {
+                    if let Err(e) = std::fs::remove_file(&self.pid_path) {
+                        eprintln!("Warning: unable to clean up PID file '{}': {}", self.pid_path.display(), e);
+                    }
+                }
+            }
         }
     }
 }
@@ -89,27 +95,39 @@ fn acquire_process_lock() -> Result<ProcessLock> {
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 // Lock file exists — check if the owning process is still alive
-                if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
-                    if let Ok(pid) = pid_str.trim().parse::<u32>() {
-                        if is_process_running(pid) {
-                            anyhow::bail!("Another getlatestrepo instance is running (PID: {})", pid);
+                let mut acquired = false;
+                for attempt in 0..3 {
+                    if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
+                        if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                            if is_process_running(pid) {
+                                anyhow::bail!("Another getlatestrepo instance is running (PID: {})", pid);
+                            }
+                        }
+                    }
+                    // Stale lock — remove and retry atomically
+                    let _ = std::fs::remove_file(&pid_file);
+                    match std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&pid_file)
+                    {
+                        Ok(mut f) => {
+                            use std::io::Write;
+                            let _ = write!(f, "{}", current_pid);
+                            acquired = true;
+                            break;
+                        }
+                        Err(_) if attempt < 2 => {
+                            // 可能被其他进程抢先，短暂等待后重试
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                        }
+                        Err(e) => {
+                            anyhow::bail!("Unable to acquire lock after removing stale PID file: {}", e);
                         }
                     }
                 }
-                // Stale lock — remove and retry atomically
-                let _ = std::fs::remove_file(&pid_file);
-                match std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&pid_file)
-                {
-                    Ok(mut f) => {
-                        use std::io::Write;
-                        let _ = write!(f, "{}", current_pid);
-                    }
-                    Err(e) => {
-                        anyhow::bail!("Unable to acquire lock after removing stale PID file: {}", e);
-                    }
+                if !acquired {
+                    anyhow::bail!("Unable to acquire lock: stale PID file could not be replaced after multiple retries");
                 }
             }
             Err(e) => {
@@ -125,16 +143,21 @@ fn acquire_process_lock() -> Result<ProcessLock> {
 fn is_process_running(pid: u32) -> bool {
     use std::process::Command;
 
-    // Use tasklist to check if process exists
+    // Use tasklist to check if process exists and is getlatestrepo
+    // /FO CSV produces machine-parseable output: "Image Name","PID",...
     let output = Command::new("tasklist")
-        .args(&["/FI", &format!("PID eq {}", pid), "/NH"])
+        .args(&["/FI", &format!("PID eq {}", pid), "/NH", "/FO", "CSV"])
         .output();
 
     match output {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             // tasklist returns "INFO: No tasks are running" when PID not found
-            !stdout.contains("No tasks") && !stdout.trim().is_empty()
+            if stdout.contains("No tasks") || stdout.trim().is_empty() {
+                return false;
+            }
+            // 验证进程名包含 getlatestrepo，降低 PID 复用误报概率
+            stdout.to_ascii_lowercase().contains("getlatestrepo")
         }
         Err(_) => {
             // If unable to check, assume process exists (conservative strategy)
@@ -156,6 +179,7 @@ async fn main() -> Result<std::process::ExitCode> {
 
     let cli = Cli::parse();
     let no_security_check = cli.no_security_check;
+    let auto_skip_high_risk = cli.auto_skip_high_risk;
 
     // 启动自检：修复路径不一致的记录，清理过期的临时文件
     if !matches!(cli.command, Commands::Init { .. })
@@ -177,12 +201,12 @@ async fn main() -> Result<std::process::ExitCode> {
             depth,
             jobs,
         } => {
-            commands::scan::execute(fetch, output, out, depth, validate_jobs(jobs), no_security_check)
+            commands::scan::execute(fetch, output, out, depth, validate_jobs(jobs), no_security_check, auto_skip_high_risk)
                 .await
                 .map(|_| 0)
         }
         Commands::Fetch { jobs, timeout } => {
-            commands::fetch::execute(validate_jobs(jobs), timeout, no_security_check, proxy_config)
+            commands::fetch::execute(validate_jobs(jobs), timeout, no_security_check, auto_skip_high_risk, proxy_config)
                 .await
                 .map(|_| 0)
         }
@@ -213,6 +237,7 @@ async fn main() -> Result<std::process::ExitCode> {
                 diff_after,
                 yes,
                 no_security_check,
+                auto_skip_high_risk,
                 no_pull_guard,
                 proxy_config,
             )

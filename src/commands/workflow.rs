@@ -18,6 +18,7 @@ pub async fn execute(
     diff_after: bool,
     yes: bool,
     no_security_check: bool,
+    auto_skip_high_risk: bool,
     no_pull_guard: bool,
     proxy_config: Option<ProxyConfig>,
 ) -> Result<i32> {
@@ -71,6 +72,7 @@ pub async fn execute(
     // Execute workflow
     let mut executor = WorkflowExecutor::new(workflow, jobs, timeout, dry_run, silent)
         .with_security_check(!no_security_check)
+        .with_auto_skip_high_risk(auto_skip_high_risk)
         .with_pull_safety_check(!no_pull_guard); // Enabled repo-deletion detection by default
 
     if let Some(proxy) = proxy_config

@@ -94,6 +94,7 @@ pub struct WorkflowExecutor {
     dry_run: bool,
     silent: bool,
     security_check: bool,
+    auto_skip_high_risk: bool,
     pull_safety_check: bool,  // Pull safety check (prevent repo deletion)
     proxy: ProxyConfig,
 }
@@ -113,6 +114,7 @@ impl WorkflowExecutor {
             dry_run,
             silent,
             security_check: true,  // Enabled by default
+            auto_skip_high_risk: false,
             pull_safety_check: true,  // Enabled repo-deletion detection by default
             proxy: ProxyConfig::default(),
         }
@@ -121,6 +123,12 @@ impl WorkflowExecutor {
     /// Set whether to enable the security scan
     pub fn with_security_check(mut self, enable: bool) -> Self {
         self.security_check = enable;
+        self
+    }
+
+    /// Set whether to automatically skip high-risk repositories
+    pub fn with_auto_skip_high_risk(mut self, enable: bool) -> Self {
+        self.auto_skip_high_risk = enable;
         self
     }
 
@@ -402,14 +410,14 @@ impl WorkflowExecutor {
                     }
                 }
 
-                WorkflowStep::PullForce { jobs, .. } => {
+                WorkflowStep::PullForce { jobs, diff_after } => {
                     let jobs = jobs.unwrap_or(self.jobs);
 
                     if !self.silent {
                         print!("[{}] Force pull... ", format!("{}/{}", step_num, total_steps).cyan());
                     }
 
-                    match self.execute_pull_force(&db, &sources, jobs).await {
+                    match self.execute_pull_force(&db, &sources, jobs, *diff_after).await {
                         Ok(pull_result) => {
                             if !self.silent {
                                 println!("{} {}/{}", "✓".green(),
@@ -447,6 +455,18 @@ impl WorkflowExecutor {
                                 if pull_result.failed_count > 0 {
                                     println!("   {} repositories failed",
                                         pull_result.failed_count.to_string().red());
+                                }
+
+                                if *diff_after && !pull_result.pulled_repos.is_empty() {
+                                    println!("     {} New commits after Pull:", "📋".cyan());
+                                    for (name, commits) in &pull_result.pulled_repos {
+                                        if !commits.is_empty() {
+                                            println!("        {} {}:", "→".cyan(), name.bold());
+                                            for commit in commits {
+                                                println!("           {}", commit);
+                                            }
+                                        }
+                                    }
                                 }
                             }
 
@@ -522,6 +542,7 @@ impl WorkflowExecutor {
 
         let fetcher = Fetcher::new(jobs, timeout)
             .with_security_scan(self.security_check)
+            .with_auto_skip_high_risk(self.auto_skip_high_risk)
             .with_proxy(self.proxy.clone())
             .with_move_to_needauth(true)
             .with_auto_sync(false); // Already manually synced
@@ -554,15 +575,17 @@ impl WorkflowExecutor {
             repos.clone()
         };
 
+        let report_repos = if only_dirty_or_behind { &filtered_repos } else { &repos };
+
         let mut summary = RepoSummary::new();
-        for repo in &repos {
+        for repo in report_repos {
             summary.add(repo);
         }
 
         match output {
             OutputFormat::Terminal => {
                 let reporter = TerminalReporter::new();
-                let report = reporter.generate(&filtered_repos, &summary)?;
+                let report = reporter.generate(report_repos, &summary)?;
                 if !self.silent {
                     println!();
                     println!("{}", report);
@@ -570,7 +593,7 @@ impl WorkflowExecutor {
             }
             OutputFormat::Html => {
                 let reporter = HtmlReporter::new();
-                let report = reporter.generate(&repos, &summary)?;
+                let report = reporter.generate(report_repos, &summary)?;
                 let path = save_report_async(report, None, "html".to_string()).await?;
 
                 if let Err(e) = super::types::ensure_reports_dir(&path) {
@@ -588,7 +611,7 @@ impl WorkflowExecutor {
             }
             OutputFormat::Markdown => {
                 let reporter = MarkdownReporter::new();
-                let report = reporter.generate(&repos, &summary)?;
+                let report = reporter.generate(report_repos, &summary)?;
                 let path = save_report_async(report, None, "md".to_string()).await?;
                 if !self.silent {
                     println!();
@@ -728,12 +751,16 @@ impl WorkflowExecutor {
 
                 let path = std::path::PathBuf::from(&repo.path);
                 let repo = repo.clone();
-                let result = match tokio::task::spawn_blocking(move || {
-                    crate::git::GitOps::check_pull_safety(&path)
-                }).await {
-                    Ok(Ok(report)) => Ok(report),
-                    Ok(Err(e)) => Err(e),
-                    Err(_) => Err(crate::error::GetLatestRepoError::Other(anyhow::anyhow!("Safety check task panicked"))),
+                let result = match tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    tokio::task::spawn_blocking(move || {
+                        crate::git::GitOps::check_pull_safety(&path)
+                    })
+                ).await {
+                    Ok(Ok(Ok(report))) => Ok(report),
+                    Ok(Ok(Err(e))) => Err(e),
+                    Ok(Err(_)) => Err(crate::error::GetLatestRepoError::Other(anyhow::anyhow!("Safety check task panicked"))),
+                    Err(_) => Err(crate::error::GetLatestRepoError::Other(anyhow::anyhow!("Safety check timed out (30s)"))),
                 };
                 match result {
                     Ok(report) => {
@@ -969,6 +996,20 @@ impl WorkflowExecutor {
         // - Reasonable timeout
         use crate::concurrent::execute_concurrent_raw;
         
+        // 若启用 diff_after，预先记录 pull 前的 HEAD OID，用于精确显示新增提交
+        let mut original_oids: std::collections::HashMap<String, git2::Oid> = std::collections::HashMap::new();
+        if diff_after {
+            for repo in &clean_repos {
+                let path = std::path::PathBuf::from(&repo.path);
+                if let Ok(repo_git) = git2::Repository::open(&path)
+                    && let Ok(head) = repo_git.head()
+                    && let Some(oid) = head.target()
+                {
+                    original_oids.insert(repo.path.clone(), oid);
+                }
+            }
+        }
+
         // Build the task list
         let tasks: Vec<_> = clean_repos
             .into_iter()
@@ -1007,9 +1048,12 @@ impl WorkflowExecutor {
                     if let Ok(Some(old_repo)) = db.get_repository(&path) {
                         let path_buf = std::path::PathBuf::from(&path);
                         let root_path = old_repo.root_path.clone();
-                        if let Ok(Ok(mut fresh)) = tokio::task::spawn_blocking(move || {
-                            crate::git::GitOps::inspect(&path_buf, &root_path)
-                        }).await {
+                        if let Ok(Ok(Ok(mut fresh))) = tokio::time::timeout(
+                            std::time::Duration::from_secs(30),
+                            tokio::task::spawn_blocking(move || {
+                                crate::git::GitOps::inspect(&path_buf, &root_path)
+                            })
+                        ).await {
                             fresh.id = old_repo.id;
                             fresh.last_fetch_at = old_repo.last_fetch_at;
                             fresh.last_pull_at = Some(chrono::Local::now());
@@ -1049,14 +1093,34 @@ impl WorkflowExecutor {
         if diff_after && !success_paths.is_empty() {
             for (name, path) in success_paths {
                 let path_buf = std::path::PathBuf::from(&path);
-                match tokio::task::spawn_blocking(move || {
-                    crate::git::GitOps::get_recent_commits(&path_buf, 10)
-                }).await {
-                    Ok(Ok(commits)) => {
-                        pull_result.pulled_repos.push((name, commits));
+                if let Some(&since_oid) = original_oids.get(&path) {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(30),
+                        tokio::task::spawn_blocking(move || {
+                            crate::git::GitOps::get_commits_since(&path_buf, since_oid)
+                        })
+                    ).await {
+                        Ok(Ok(Ok(commits))) => {
+                            pull_result.pulled_repos.push((name, commits));
+                        }
+                        _ => {
+                            pull_result.pulled_repos.push((name, vec!["(无法获取新增提交信息)".to_string()]));
+                        }
                     }
-                    _ => {
-                        pull_result.pulled_repos.push((name, vec!["(Unable to get commit info)".to_string()]));
+                } else {
+                    // 未记录到原始 OID（极少见），回退到最近 10 条
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(30),
+                        tokio::task::spawn_blocking(move || {
+                            crate::git::GitOps::get_recent_commits(&path_buf, 10)
+                        })
+                    ).await {
+                        Ok(Ok(Ok(commits))) => {
+                            pull_result.pulled_repos.push((name, commits));
+                        }
+                        _ => {
+                            pull_result.pulled_repos.push((name, vec!["(无法获取提交信息)".to_string()]));
+                        }
                     }
                 }
             }
@@ -1072,6 +1136,7 @@ impl WorkflowExecutor {
         db: &Database,
         sources: &[crate::models::ScanSource],
         jobs: usize,
+        diff_after: bool,
     ) -> Result<PullForceResult> {
         // Concurrency control uses standard library synchronization primitives
 
@@ -1095,9 +1160,23 @@ impl WorkflowExecutor {
             return Ok(PullForceResult::new());
         }
 
+        // 若启用 diff_after，预先记录 pull 前的 HEAD OID，用于精确显示新增提交
+        let mut original_oids: std::collections::HashMap<String, git2::Oid> = std::collections::HashMap::new();
+        if diff_after {
+            for repo in &behind_repos {
+                let path = std::path::PathBuf::from(&repo.path);
+                if let Ok(repo_git) = git2::Repository::open(&path)
+                    && let Ok(head) = repo_git.head()
+                    && let Some(oid) = head.target()
+                {
+                    original_oids.insert(repo.path.clone(), oid);
+                }
+            }
+        }
+
         // Concurrent Pull (using unified concurrent executor)
         use crate::concurrent::execute_concurrent_raw;
-        
+
         // Build the task list
         let tasks: Vec<_> = behind_repos
             .into_iter()
@@ -1153,13 +1232,16 @@ impl WorkflowExecutor {
         }
 
         // Refresh the status of succeeded repositories
-        for (_name, path) in success_paths {
-            if let Ok(Some(old_repo)) = db.get_repository(&path) {
-                let path_buf = std::path::PathBuf::from(&path);
+        for (_name, path) in &success_paths {
+            if let Ok(Some(old_repo)) = db.get_repository(path) {
+                let path_buf = std::path::PathBuf::from(path);
                 let root_path = old_repo.root_path.clone();
-                if let Ok(Ok(mut fresh)) = tokio::task::spawn_blocking(move || {
-                    crate::git::GitOps::inspect(&path_buf, &root_path)
-                }).await {
+                if let Ok(Ok(Ok(mut fresh))) = tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    tokio::task::spawn_blocking(move || {
+                        crate::git::GitOps::inspect(&path_buf, &root_path)
+                    })
+                ).await {
                     fresh.id = old_repo.id;
                     fresh.last_fetch_at = old_repo.last_fetch_at;
                     fresh.last_pull_at = Some(chrono::Local::now());
@@ -1167,8 +1249,66 @@ impl WorkflowExecutor {
                         eprintln!("   Warning: Failed to update repository after pull: {}", e);
                     } else {
                         // Only update pull time after upsert succeeds
-                        if let Err(e) = db.update_pull_time(&path) {
-                            eprintln!("   ⚠️ Update pull time failed '{}': {}", crate::utils::sanitize_path(&path), e);
+                        if let Err(e) = db.update_pull_time(path) {
+                            eprintln!("   ⚠️ Update pull time failed '{}': {}", crate::utils::sanitize_path(path), e);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Refresh the status of conflict repositories so dirty state is visible in subsequent scans
+        for conflict in &pull_result.conflict_repos {
+            if let Ok(Some(old_repo)) = db.get_repository(&conflict.path) {
+                let path_buf = std::path::PathBuf::from(&conflict.path);
+                let root_path = old_repo.root_path.clone();
+                if let Ok(Ok(Ok(mut fresh))) = tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    tokio::task::spawn_blocking(move || {
+                        crate::git::GitOps::inspect(&path_buf, &root_path)
+                    })
+                ).await {
+                    fresh.id = old_repo.id;
+                    fresh.last_fetch_at = old_repo.last_fetch_at;
+                    fresh.last_pull_at = Some(chrono::Local::now());
+                    if let Err(e) = db.upsert_repository(&mut fresh) {
+                        eprintln!("   Warning: Failed to update conflict repository status: {}", e);
+                    }
+                }
+            }
+        }
+
+        // diff_after: 精确显示本次 pull 新增的提交
+        if diff_after && !success_paths.is_empty() {
+            for (name, path) in success_paths {
+                let path_buf = std::path::PathBuf::from(&path);
+                if let Some(&since_oid) = original_oids.get(&path) {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(30),
+                        tokio::task::spawn_blocking(move || {
+                            crate::git::GitOps::get_commits_since(&path_buf, since_oid)
+                        })
+                    ).await {
+                        Ok(Ok(Ok(commits))) => {
+                            pull_result.pulled_repos.push((name, commits));
+                        }
+                        _ => {
+                            pull_result.pulled_repos.push((name, vec!["(无法获取新增提交信息)".to_string()]));
+                        }
+                    }
+                } else {
+                    // 未记录到原始 OID（极少见），回退到最近 10 条
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(30),
+                        tokio::task::spawn_blocking(move || {
+                            crate::git::GitOps::get_recent_commits(&path_buf, 10)
+                        })
+                    ).await {
+                        Ok(Ok(Ok(commits))) => {
+                            pull_result.pulled_repos.push((name, commits));
+                        }
+                        _ => {
+                            pull_result.pulled_repos.push((name, vec!["(无法获取提交信息)".to_string()]));
                         }
                     }
                 }

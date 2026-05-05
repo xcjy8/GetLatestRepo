@@ -47,7 +47,13 @@ pub async fn execute(command: ConfigCommands) -> Result<()> {
                 db.delete_scan_source(id)?;
             }
             // Also update config file
-            config.remove_scan_source(&path_or_id)?;
+            // 若输入是路径，先 canonicalize 以匹配 add 时的存储格式
+            let canonicalized = if let Ok(path) = std::path::Path::new(&path_or_id).canonicalize() {
+                path.to_string_lossy().to_string()
+            } else {
+                path_or_id
+            };
+            config.remove_scan_source(&canonicalized)?;
             println!("{} Removed scan source", "✓".green());
         }
         ConfigCommands::Ignore { patterns } => {

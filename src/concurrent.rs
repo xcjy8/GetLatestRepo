@@ -6,9 +6,8 @@
 //! - Error handling (does not silently ignore errors)
 //! - Reasonable timeout handling
 
-use std::sync::mpsc::{channel, Sender};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::mpsc::{channel, sync_channel, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 /// Task results
@@ -42,9 +41,13 @@ where
     }
 
     let (tx, rx) = channel::<TaskResult<Option<T>>>();
-    // Use AtomicUsize instead of Mutex<usize>, avoiding lock poisoning and counter leak issues
-    let active_count = Arc::new(AtomicUsize::new(0));
-    let max_concurrent = Arc::new(AtomicUsize::new(max_concurrent));
+    // 使用 sync_channel 作为信号量，完全消除轮询和忙等
+    let (sem_tx, sem_rx) = sync_channel::<()>(max_concurrent);
+    // 预填充信号量，表示可用槽位
+    for _ in 0..max_concurrent {
+        let _ = sem_tx.send(());
+    }
+    let sem_tx = Arc::new(Mutex::new(sem_tx));
     let mut handles = Vec::new();
 
     for (index, task) in tasks.into_iter().enumerate() {
@@ -55,42 +58,18 @@ where
             break;
         }
 
-        // 等待直到有空位（阻塞式，非忙等）
-        loop {
-            let current = active_count.load(Ordering::Relaxed);
-            let max = max_concurrent.load(Ordering::Relaxed);
-            if current < max {
-                // 尝试递增计数器
-                match active_count.compare_exchange_weak(
-                    current,
-                    current + 1,
-                    Ordering::SeqCst,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => break,
-                    Err(_) => continue, // Contention failed, retry
-                }
-            }
-            // Brief wait to avoid CPU spinning
-            thread::sleep(std::time::Duration::from_millis(1));
+        // 阻塞等待信号量（无轮询、无忙等）
+        if sem_rx.recv().is_err() {
+            break; // semaphore 已关闭
         }
 
         let tx_inner = Sender::clone(&tx);
-        let active_count_inner = Arc::clone(&active_count);
+        let sem_tx_inner = Arc::clone(&sem_tx);
 
         // Spawn thread with reduced stack size (1MB) to limit memory waste if threads are abandoned after timeout
         match thread::Builder::new()
             .stack_size(1024 * 1024)
             .spawn(move || {
-                // Use RAII guard to ensure counter decrements correctly (even on panic)
-                struct CountGuard(Arc<AtomicUsize>);
-                impl Drop for CountGuard {
-                    fn drop(&mut self) {
-                        self.0.fetch_sub(1, Ordering::SeqCst);
-                    }
-                }
-                let _guard = CountGuard(active_count_inner);
-
                 // Execute task (catch panic)
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task));
 
@@ -103,12 +82,18 @@ where
                     }
                 };
                 let _ = tx_inner.send(TaskResult { index, result });
-                // _guard drops here, automatically decrementing counter
+                // 释放信号量，通知等待者有空位
+                if let Ok(sem) = sem_tx_inner.lock() {
+                    let _ = sem.send(());
+                }
             }) {
             Ok(handle) => handles.push(handle),
             Err(e) => {
                 eprintln!("Warning: failed to spawn thread for task {}: {}", index, e);
-                active_count.fetch_sub(1, Ordering::SeqCst);
+                // 释放信号量
+                if let Ok(sem) = sem_tx.lock() {
+                    let _ = sem.send(());
+                }
                 let _ = tx.send(TaskResult { index, result: None });
             }
         }
@@ -154,14 +139,17 @@ where
         }
     }
 
-    // Best-effort join with its own deadline to avoid blocking forever
-    let join_deadline = std::time::Instant::now() + std::time::Duration::from_secs(crate::utils::CONCURRENT_JOIN_TIMEOUT_SECS);
+    // Best-effort join: 先 join 已完成的线程回收资源，未完成的 detach
+    let mut unfinished = 0;
     for handle in handles {
-        if std::time::Instant::now() > join_deadline {
-            eprintln!("Warning: join deadline exceeded, leaving remaining threads detached to prevent deadlock");
-            break;
+        if handle.is_finished() {
+            let _ = handle.join();
+        } else {
+            unfinished += 1;
         }
-        let _ = handle.join();
+    }
+    if unfinished > 0 {
+        eprintln!("Warning: {} threads still running after collection, detached", unfinished);
     }
 
     // Flatten results: Option<Option<T>> -> Option<T>

@@ -12,6 +12,10 @@ pub struct Cli {
     /// Disable security scan before fetch/pull
     #[arg(long, global = true)]
     pub no_security_check: bool,
+
+    /// 自动跳过高风险仓库（不交互确认，直接跳过）
+    #[arg(long, global = true)]
+    pub auto_skip_high_risk: bool,
     
     /// Enable proxy (default: http://127.0.0.1:7890)
     #[arg(long, global = true)]
