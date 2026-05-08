@@ -1,6 +1,6 @@
 [package]
 name = "getlatestrepo"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2024"
 description = "A fast and elegant local Git repository manager written in Rust"
 license = "AGPL-3.0-or-later"
