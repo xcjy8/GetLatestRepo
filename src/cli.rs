@@ -90,7 +90,7 @@ pub enum Commands {
 
     /// Execute a preset workflow
     Workflow {
-        /// Workflow name (daily/check/report/ci/pull-safe/pull-force)
+        /// Workflow name (daily/check/report/ci/pull-safe/pull-force/pull-backup)
         name: Option<String>,
 
         /// List all available workflows

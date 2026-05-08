@@ -33,6 +33,8 @@ pub enum WorkflowStep {
     PullSafe { jobs: Option<usize>, confirm: bool, diff_after: bool },
     /// Force pull (stash → pull → pop)
     PullForce { jobs: Option<usize>, diff_after: bool },
+    /// Backup pull (stash → hard reset → pop) — mirrors remote exactly
+    PullBackup { jobs: Option<usize>, diff_after: bool },
 }
 
 /// Check condition
@@ -66,6 +68,7 @@ impl BuiltInWorkflows {
             Self::ci(),
             Self::pull_safe(),
             Self::pull_force(),
+            Self::pull_backup(),
         ]
     }
 
@@ -202,6 +205,31 @@ impl BuiltInWorkflows {
         }
     }
 
+    /// Backup update (mirror remote exactly, auto-handle diverged history)
+    fn pull_backup() -> Workflow {
+        Workflow {
+            name: "pull-backup".to_string(),
+            description: "Backup mode: fetch → scan → hard reset all repos to match remote exactly (auto-stash local changes, handles force-push)".to_string(),
+            steps: vec![
+                WorkflowStep::Fetch {
+                    jobs: Some(5),
+                    timeout: Some(30),
+                },
+                WorkflowStep::Scan {
+                    output: OutputFormat::Terminal,
+                    open: false,
+                    only_dirty_or_behind: false,
+                },
+                WorkflowStep::PullBackup {
+                    jobs: Some(5),
+                    diff_after: false,
+                },
+            ],
+            default_jobs: 5,
+            default_timeout: 30,
+        }
+    }
+
     /// Get workflow by name
     pub fn get(name: &str) -> Option<Workflow> {
         Self::all().into_iter().find(|w| w.name == name)
@@ -307,6 +335,38 @@ impl PullForceResult {
             failed_count: 0,
             conflict_repos: Vec::new(),
             pulled_repos: Vec::new(),
+        }
+    }
+
+    pub fn has_errors(&self) -> bool {
+        self.failed_count > 0 || !self.conflict_repos.is_empty()
+    }
+}
+
+/// Pull-backup results
+#[derive(Debug, Clone)]
+pub struct PullBackupResult {
+    pub total_count: usize,
+    pub success_count: usize,
+    pub failed_count: usize,
+    pub conflict_repos: Vec<ConflictInfo>,
+    pub pulled_repos: Vec<(String, Vec<String>)>,
+    pub success_repos: Vec<(String, Option<String>)>,
+    /// Repositories whose history was archived before reset
+    /// (repo_name, archive_ref_name)
+    pub archived_repos: Vec<(String, String)>,
+}
+
+impl PullBackupResult {
+    pub fn new() -> Self {
+        Self {
+            total_count: 0,
+            success_count: 0,
+            failed_count: 0,
+            conflict_repos: Vec::new(),
+            pulled_repos: Vec::new(),
+            success_repos: Vec::new(),
+            archived_repos: Vec::new(),
         }
     }
 

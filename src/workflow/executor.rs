@@ -431,15 +431,15 @@ impl WorkflowExecutor {
                                     for (i, info) in pull_result.conflict_repos.iter().enumerate() {
                                         let is_last = i == pull_result.conflict_repos.len() - 1;
                                         let repo_connector = if is_last { "└─" } else { "├─" };
-                                        
+
                                         println!("     {} 📦 {}", repo_connector, info.name.bold());
-                                        
+
                                         let stash_display = match info.stash_index {
                                             Some(idx) => format!("{} (stash@{{{}}})", info.stash_message, idx),
                                             None => info.stash_message.clone(),
                                         };
                                         println!("        ├─ stash: {}", stash_display);
-                                        
+
                                         if !info.conflict_files.is_empty() {
                                             println!("        ├─ Conflict files ({}):", info.conflict_files.len());
                                             for (j, file) in info.conflict_files.iter().enumerate() {
@@ -448,7 +448,7 @@ impl WorkflowExecutor {
                                                 println!("        │  {} {}", file_connector, file);
                                             }
                                         }
-                                        
+
                                         println!("        └─ Recovery command: git -C {} stash pop stash@{{index}}", info.path);
                                     }
                                 }
@@ -479,6 +479,119 @@ impl WorkflowExecutor {
                                 println!("{} {}", "✗".red(), e);
                             }
                             result.add_error(format!("Pull force failed: {}", e));
+                        }
+                    }
+                }
+
+                WorkflowStep::PullBackup { jobs, diff_after } => {
+                    let jobs = jobs.unwrap_or(self.jobs);
+
+                    if !self.silent {
+                        println!("  [{}] Backup pull (hard reset to remote)", format!("{}/{}", step_num, total_steps).cyan());
+                    }
+
+                    match self.execute_pull_backup(&db, &sources, jobs, *diff_after).await {
+                        Ok(pull_result) => {
+                            if !self.silent {
+                                if pull_result.total_count == 0 {
+                                    println!("  └─ {} No repositories need updates", "ℹ".blue());
+                                } else {
+                                    println!("  └─ {} succeeded: {} | failed: {}",
+                                        "▶".blue(),
+                                        pull_result.success_count.to_string().green(),
+                                        if pull_result.failed_count > 0 {
+                                            pull_result.failed_count.to_string().red()
+                                        } else {
+                                            pull_result.failed_count.to_string().green()
+                                        }
+                                    );
+
+                                    if !pull_result.archived_repos.is_empty() {
+                                        println!("     {} History archived (remote rewritten):", "📦".cyan());
+                                        for (i, (name, archive_ref)) in pull_result.archived_repos.iter().enumerate() {
+                                            let is_last = i == pull_result.archived_repos.len() - 1;
+                                            let corner = if is_last { "└─" } else { "├─" };
+                                            println!("        {} {} {}",
+                                                corner,
+                                                name.yellow(),
+                                                format!("→ {}", archive_ref).dimmed()
+                                            );
+                                        }
+                                        println!();
+                                    }
+
+                                    if !pull_result.success_repos.is_empty() {
+                                        println!("     {} Successfully synced repos:", "✓".green());
+                                        for (i, (name, time)) in pull_result.success_repos.iter().enumerate() {
+                                            let is_last = i == pull_result.success_repos.len() - 1;
+                                            let corner = if is_last { "└─" } else { "├─" };
+                                            let time_str = time.as_deref().unwrap_or("(no time info)");
+                                            println!("        {} {} {}",
+                                                corner,
+                                                name.green(),
+                                                format!("- {}", time_str).dimmed()
+                                            );
+                                        }
+                                        println!();
+                                    }
+
+                                    if !pull_result.conflict_repos.is_empty() {
+                                        println!("     {} repo(s) have stash pop conflicts, manual recovery needed:",
+                                            pull_result.conflict_repos.len().to_string().yellow());
+                                        for (i, info) in pull_result.conflict_repos.iter().enumerate() {
+                                            let is_last = i == pull_result.conflict_repos.len() - 1;
+                                            let repo_connector = if is_last { "└─" } else { "├─" };
+
+                                            println!("        {} 📦 {}", repo_connector, info.name.bold());
+
+                                            let stash_display = match info.stash_index {
+                                                Some(idx) => format!("{} (stash@{{{}}})", info.stash_message, idx),
+                                                None => info.stash_message.clone(),
+                                            };
+                                            println!("           ├─ stash: {}", stash_display);
+
+                                            if !info.conflict_files.is_empty() {
+                                                println!("           ├─ Conflict files ({}):", info.conflict_files.len());
+                                                for (j, file) in info.conflict_files.iter().enumerate() {
+                                                    let is_last_file = j == info.conflict_files.len() - 1;
+                                                    let file_connector = if is_last_file { "└─" } else { "├─" };
+                                                    println!("           │  {} {}", file_connector, file);
+                                                }
+                                            }
+
+                                            println!("           └─ Recovery command: git -C {} stash pop stash@{{index}}", info.path);
+                                        }
+                                    }
+
+                                    if pull_result.failed_count > 0 {
+                                        println!("     {} repositories failed",
+                                            pull_result.failed_count.to_string().red());
+                                    }
+
+                                    if *diff_after && !pull_result.pulled_repos.is_empty() {
+                                        println!("     {} New commits after sync:", "📋".cyan());
+                                        for (name, commits) in &pull_result.pulled_repos {
+                                            if !commits.is_empty() {
+                                                println!("        {} {}:", "→".cyan(), name.bold());
+                                                for commit in commits {
+                                                    println!("           {}", commit);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                println!();
+                            }
+
+                            if pull_result.has_errors() {
+                                result.success = false;
+                            }
+                        }
+                        Err(e) => {
+                            if !self.silent {
+                                println!("  └─ {} {}", "✗".red(), e);
+                            }
+                            result.add_error(format!("Pull backup failed: {}", e));
                         }
                     }
                 }
@@ -1129,6 +1242,199 @@ impl WorkflowExecutor {
         Ok(pull_result)
     }
 
+    /// Execute backup pull (hard reset to remote, handles diverged history)
+    #[allow(clippy::type_complexity)]
+    async fn execute_pull_backup(
+        &self,
+        db: &Database,
+        sources: &[crate::models::ScanSource],
+        jobs: usize,
+        diff_after: bool,
+    ) -> Result<super::types::PullBackupResult> {
+        use crate::concurrent::execute_concurrent_raw;
+
+        let all_repos = db.list_repositories()?;
+        let source_paths: std::collections::HashSet<_> = sources.iter()
+            .map(|s| s.root_path.as_str())
+            .collect();
+
+        let repos: Vec<_> = all_repos.into_iter()
+            .filter(|r| source_paths.contains(r.root_path.as_str()))
+            .collect();
+        if repos.is_empty() {
+            anyhow::bail!("No repositories found");
+        }
+
+        let behind_repos: Vec<_> = repos.into_iter()
+            .filter(|r| r.freshness == Freshness::HasUpdates)
+            .collect();
+
+        if behind_repos.is_empty() {
+            return Ok(super::types::PullBackupResult::new());
+        }
+
+        // 若启用 diff_after，预先记录 pull 前的 HEAD OID
+        let mut original_oids: std::collections::HashMap<String, git2::Oid> = std::collections::HashMap::new();
+        if diff_after {
+            for repo in &behind_repos {
+                let path = std::path::PathBuf::from(&repo.path);
+                if let Ok(repo_git) = git2::Repository::open(&path)
+                    && let Ok(head) = repo_git.head()
+                    && let Some(oid) = head.target()
+                {
+                    original_oids.insert(repo.path.clone(), oid);
+                }
+            }
+        }
+
+        let tasks: Vec<_> = behind_repos
+            .into_iter()
+            .map(|repo| {
+                let path = std::path::PathBuf::from(&repo.path);
+                let name = repo.name.clone();
+                let repo_path = repo.path.clone();
+                move || {
+                    let result = crate::git::GitOps::pull_backup(&path);
+                    (name, repo_path, result)
+                }
+            })
+            .collect();
+
+        let results: Vec<Option<(String, String, Result<(crate::git::PullForceOutcome, Option<String>), crate::error::GetLatestRepoError>)>> = execute_concurrent_raw(tasks, jobs);
+
+        let mut pull_result = super::types::PullBackupResult::new();
+        let mut success_paths: Vec<(String, String)> = Vec::new();
+
+        for result in results {
+            pull_result.total_count += 1;
+
+            match result {
+                Some((name, path, Ok((crate::git::PullForceOutcome::Success, archive_ref)))) => {
+                    pull_result.success_count += 1;
+                    success_paths.push((name.clone(), path.clone()));
+
+                    if let Some(ref ar) = archive_ref {
+                        pull_result.archived_repos.push((name.clone(), ar.clone()));
+                    }
+
+                    let mut latest_time = None;
+                    if let Ok(Some(old_repo)) = db.get_repository(&path) {
+                        let path_buf = std::path::PathBuf::from(&path);
+                        let root_path = old_repo.root_path.clone();
+                        if let Ok(Ok(Ok(mut fresh))) = tokio::time::timeout(
+                            std::time::Duration::from_secs(30),
+                            tokio::task::spawn_blocking(move || {
+                                crate::git::GitOps::inspect(&path_buf, &root_path)
+                            })
+                        ).await {
+                            fresh.id = old_repo.id;
+                            fresh.last_fetch_at = old_repo.last_fetch_at;
+                            fresh.last_pull_at = Some(chrono::Local::now());
+                            latest_time = fresh.last_commit_at;
+                            if let Err(e) = db.upsert_repository(&mut fresh) {
+                                eprintln!("   ⚠️ Update repository status failed '{}': {}", crate::utils::sanitize_path(&path), e);
+                            } else {
+                                if let Err(e) = db.update_pull_time(&path) {
+                                    eprintln!("   ⚠️ Update pull time failed '{}': {}", crate::utils::sanitize_path(&path), e);
+                                }
+                            }
+                        }
+                    }
+                    let time_str = latest_time.map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string());
+                    pull_result.success_repos.push((name, time_str));
+                }
+                Some((name, path, Ok((crate::git::PullForceOutcome::Conflict { stash_name, conflict_files, stash_index }, archive_ref)))) => {
+                    pull_result.failed_count += 1;
+                    if let Some(ref ar) = archive_ref {
+                        pull_result.archived_repos.push((name.clone(), ar.clone()));
+                    }
+                    pull_result.conflict_repos.push(super::types::ConflictInfo {
+                        name: name.clone(),
+                        path: path.clone(),
+                        stash_message: stash_name,
+                        conflict_files,
+                        stash_index,
+                    });
+                }
+                Some((name, _, Err(e))) => {
+                    pull_result.failed_count += 1;
+                    if !self.silent {
+                        eprintln!("   {} {} backup failed: {}", "✗".red(), name, e);
+                    }
+                }
+                None => {
+                    pull_result.failed_count += 1;
+                    if !self.silent {
+                        if crate::signal_handler::is_shutdown_requested() {
+                            eprintln!("   {} backup task interrupted by signal", "⚠️".yellow());
+                        } else {
+                            eprintln!("   {} backup task panicked", "✗".red());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Refresh conflict repos status
+        for conflict in &pull_result.conflict_repos {
+            if let Ok(Some(old_repo)) = db.get_repository(&conflict.path) {
+                let path_buf = std::path::PathBuf::from(&conflict.path);
+                let root_path = old_repo.root_path.clone();
+                if let Ok(Ok(Ok(mut fresh))) = tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    tokio::task::spawn_blocking(move || {
+                        crate::git::GitOps::inspect(&path_buf, &root_path)
+                    })
+                ).await {
+                    fresh.id = old_repo.id;
+                    fresh.last_fetch_at = old_repo.last_fetch_at;
+                    fresh.last_pull_at = Some(chrono::Local::now());
+                    if let Err(e) = db.upsert_repository(&mut fresh) {
+                        eprintln!("   Warning: Failed to update conflict repository status: {}", e);
+                    }
+                }
+            }
+        }
+
+        // diff_after
+        if diff_after && !success_paths.is_empty() {
+            for (name, path) in success_paths {
+                let path_buf = std::path::PathBuf::from(&path);
+                if let Some(&since_oid) = original_oids.get(&path) {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(30),
+                        tokio::task::spawn_blocking(move || {
+                            crate::git::GitOps::get_commits_since(&path_buf, since_oid)
+                        })
+                    ).await {
+                        Ok(Ok(Ok(commits))) => {
+                            pull_result.pulled_repos.push((name, commits));
+                        }
+                        _ => {
+                            pull_result.pulled_repos.push((name, vec!["(无法获取新增提交信息)".to_string()]));
+                        }
+                    }
+                } else {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(30),
+                        tokio::task::spawn_blocking(move || {
+                            crate::git::GitOps::get_recent_commits(&path_buf, 10)
+                        })
+                    ).await {
+                        Ok(Ok(Ok(commits))) => {
+                            pull_result.pulled_repos.push((name, commits));
+                        }
+                        _ => {
+                            pull_result.pulled_repos.push((name, vec!["(无法获取提交信息)".to_string()]));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(pull_result)
+    }
+
     /// Execute force pull
     #[allow(clippy::type_complexity)]
     async fn execute_pull_force(
@@ -1363,6 +1669,15 @@ impl WorkflowExecutor {
                     let jobs = jobs.unwrap_or(self.jobs);
                     println!("  [{}] PullForce", step_num);
                     println!("      Flow: stash → pull --ff-only → stash pop");
+                    println!("      Show diff: {}", if *diff_after { "Yes" } else { "No" });
+                    println!("      Concurrency: {}", jobs);
+                    println!("      Conflict handling: stop and prompt manual resolution");
+                }
+                WorkflowStep::PullBackup { jobs, diff_after } => {
+                    let jobs = jobs.unwrap_or(self.jobs);
+                    println!("  [{}] PullBackup", step_num);
+                    println!("      Flow: stash (if dirty) → git reset --hard origin/<branch> → stash pop");
+                    println!("      Strategy: mirrors remote exactly, handles force-push / rebase");
                     println!("      Show diff: {}", if *diff_after { "Yes" } else { "No" });
                     println!("      Concurrency: {}", jobs);
                     println!("      Conflict handling: stop and prompt manual resolution");

@@ -6,231 +6,418 @@
 [![CI](https://github.com/xcjy8/GetLatestRepo/actions/workflows/ci.yml/badge.svg)](https://github.com/xcjy8/GetLatestRepo/actions)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
-**A fast and elegant local Git repository manager written in Rust.**
+**Rust 编写的高性能本地 Git 仓库批量管理工具**
 
-[English](README.md) · [简体中文](README.zh-CN.md)
+[English](README.en.md)
 
 </div>
 
 ---
 
-## ✨ Features
+## 为什么需要 GetLatestRepo？
 
-- 🔍 **Recursive Scanning** — Discover all Git repositories under any directory in seconds.
-- ⚡ **Concurrent Fetch** — Parallel fetches with configurable concurrency and per-request proxy support.
-- 🛡️ **Safety First** — `pull-safe` skips dirty repos; `pull-force` auto-stashes changes. Built-in security scanning detects deletion risks, sensitive file changes, suspicious code patterns, and unknown committers.
-- 📊 **Beautiful Reports** — Export scan results as terminal tables, HTML, or Markdown. Auto-archived by date.
-- 🔄 **Workflow Engine** — Built-in workflows (`daily`, `check`, `report`, `ci`, `pull-safe`, `pull-force`) to automate your routine.
-- 🗃️ **SQLite Cache** — Fast local caching with WAL mode. No re-scanning unless necessary.
-- 🔒 **Process Lock** — Prevents multiple instances from running simultaneously.
-- 🌐 **Proxy Support** — Per-request proxy configuration without polluting global environment variables.
+如果你同时维护着几十甚至上百个 Git 仓库，以下场景一定不陌生：
 
----
+- 每天早上逐个 `cd` 进目录、`git fetch`、`git pull`，重复操作浪费时间
+- 不确定哪些仓库有本地未提交的修改，贸然 pull 可能引发冲突
+- 想要一份全局的仓库状态报告，却只能手动汇总
+- CI/CD 流水线需要检测所有仓库是否与远程同步，缺少现成工具
 
-## 📸 Screenshots
-
-<p align="center">
-  <img src="docs/images/01.jpg" alt="Terminal Table Report" width="80%">
-</p>
-
-<p align="center">
-  <img src="docs/images/02.jpg" alt="HTML Dark Theme Report" width="80%">
-</p>
-
-<p align="center">
-  <img src="docs/images/03.jpg" alt="Workflow Execution" width="80%">
-</p>
+**GetLatestRepo 就是为了解决这些问题而生的。** 一条命令扫描所有仓库、并发 fetch、安全拉取、生成可视化报告，把重复劳动变成自动化工作流。
 
 ---
 
-## 🚀 Installation
+## 核心功能
 
-### From Source
+| 能力 | 说明 |
+|------|------|
+| **递归扫描** | 秒级发现指定目录下所有 Git 仓库，SQLite 缓存避免重复扫描 |
+| **并发 Fetch** | 基于 Tokio 异步并发，可配置并发数与超时，支持代理 |
+| **安全拉取** | `pull-safe` 自动跳过有本地修改的仓库；`pull-force` 自动 stash → pull → pop |
+| **备份同步** | `pull-backup` 硬重置到远程最新状态，适合纯备份场景 |
+| **安全扫描** | 预操作安全检查：检测敏感文件变更、可疑代码模式、未知提交者 |
+| **工作流引擎** | 内置 7 种工作流，串联 fetch → scan → pull → report 全流程 |
+| **多格式报告** | 终端表格 / HTML（暗色主题）/ Markdown，自动按日期归档 |
+| **进程锁** | 防止多实例并发运行导致数据竞争 |
+
+---
+
+## 截图
+
+<p align="center">
+  <img src="docs/images/01.jpg" alt="终端表格报告" width="80%">
+</p>
+
+<p align="center">
+  <img src="docs/images/02.jpg" alt="HTML 暗色主题报告" width="80%">
+</p>
+
+<p align="center">
+  <img src="docs/images/03.jpg" alt="工作流执行" width="80%">
+</p>
+
+---
+
+## 安装
+
+### 从源码编译
 
 ```bash
-# Clone the repository
 git clone https://github.com/xcjy8/GetLatestRepo.git
 cd GetLatestRepo
-
-# Build release binary
 cargo build --release
 
-# Install to /usr/local/bin (optional)
+# 可选：安装到系统路径
 sudo cp target/release/getlatestrepo /usr/local/bin/
 ```
 
-### Prerequisites
+### 环境要求
 
-- Rust 1.70 or newer
-- `git` installed on your system
+- Rust 1.70+
+- Git（系统已安装）
+
+### 从 Release 下载
+
+前往 [GitHub Releases](https://github.com/xcjy8/GetLatestRepo/releases) 下载预编译二进制。
 
 ---
 
-## 🏁 Quick Start
+## 快速开始
 
 ```bash
-# 1. Initialize a scan source
+# 1. 添加扫描目录
 getlatestrepo init ~/projects
 
-# 2. Run the daily workflow (scan + fetch + status check)
+# 2. 运行日常工作流（fetch + scan + 状态汇总）
 getlatestrepo workflow daily
 
-# 3. Generate an HTML report
+# 3. 生成 HTML 报告并自动打开浏览器
 getlatestrepo workflow report
 ```
 
+三步即可完成：添加目录 → 执行工作流 → 查看报告。
+
 ---
 
-## 📖 Command Overview
+## 命令详解
 
-### Global Flags
+### 全局参数
 
-These flags are available on every command:
+| 参数 | 说明 |
+|------|------|
+| `--proxy` | 启用默认代理 `http://127.0.0.1:7890` |
+| `--proxy-url <URL>` | 指定自定义代理地址 |
+| `--no-security-check` | 禁用预操作安全扫描 |
 
-| Flag | Description |
-|------|-------------|
-| `--proxy` | Enable the default proxy (`http://127.0.0.1:7890`). |
-| `--proxy-url <URL>` | Specify a custom proxy address (e.g. `http://127.0.0.1:1080`). |
-| `--no-security-check` | Disable the pre-fetch/pre-pull security scan. |
+### 命令一览
 
-### Commands
+| 命令 | 说明 |
+|------|------|
+| `init <path>` | 添加扫描目录 |
+| `scan` | 递归扫描所有 Git 仓库 |
+| `fetch` | 并发 fetch 所有仓库 |
+| `status <path>` | 查看单个仓库详细状态 |
+| `config` | 管理扫描源、忽略规则、配置 |
+| `workflow <name>` | 执行工作流 |
+| `discard` | 交互式丢弃本地修改 |
 
-| Command | Description |
-|---------|-------------|
-| `getlatestrepo init <path>` | Add a directory to scan sources. |
-| `getlatestrepo scan` | Recursively find Git repos and persist to the local database. |
-| `getlatestrepo fetch` | Concurrently fetch all tracked repositories. |
-| `getlatestrepo status <path>` | Inspect a single repository in detail. |
-| `getlatestrepo config` | Manage scan sources, ignore patterns, and settings. |
-| `getlatestrepo workflow <name>` | Run a built-in or custom workflow. |
-| `getlatestrepo discard` | Interactively discard local changes. |
-
-### Command Options
-
-#### `init`
+### `init`
 
 ```bash
 getlatestrepo init <PATH>
 ```
 
-| Argument | Description |
-|----------|-------------|
-| `<PATH>` | The root directory to scan for Git repositories. |
+将指定目录添加为扫描源，后续 scan/fetch 操作会递归发现该目录下的所有 Git 仓库。
 
-#### `scan`
+### `scan`
 
 ```bash
 getlatestrepo scan [OPTIONS]
 ```
 
-| Option | Description |
-|--------|-------------|
-| `--fetch` | Run fetch before scanning. |
-| `-o, --output <FORMAT>` | Output format: `terminal` (default), `html`, or `markdown`. |
-| `--out <PATH>` | Custom output file path (default auto-generated). |
-| `-d, --depth <N>` | Limit scan depth. |
-| `-j, --jobs <N>` | Concurrency limit (default: 5). |
+| 参数 | 说明 |
+|------|------|
+| `--fetch` | 扫描前先执行 fetch |
+| `-o, --output <FORMAT>` | 输出格式：`terminal`（默认）、`html`、`markdown` |
+| `--out <PATH>` | 自定义输出文件路径 |
+| `-d, --depth <N>` | 限制扫描深度 |
+| `-j, --jobs <N>` | 并发数（默认 5） |
 
-#### `fetch`
+### `fetch`
 
 ```bash
 getlatestrepo fetch [OPTIONS]
 ```
 
-| Option | Description |
-|--------|-------------|
-| `-j, --jobs <N>` | Concurrency limit (default: 5). |
-| `-t, --timeout <SECS>` | Timeout per fetch in seconds (default: 30). |
+| 参数 | 说明 |
+|------|------|
+| `-j, --jobs <N>` | 并发数（默认 5） |
+| `-t, --timeout <SECS>` | 单次 fetch 超时秒数（默认 30） |
 
-#### `status`
+### `status`
 
 ```bash
 getlatestrepo status <PATH> [OPTIONS]
 ```
 
-| Option | Description |
-|--------|-------------|
-| `--diff` | Show diff content. |
+| 参数 | 说明 |
+|------|------|
+| `--diff` | 显示 diff 内容 |
 
-#### `config`
+### `config`
 
 ```bash
 getlatestrepo config <SUBCOMMAND>
 ```
 
-| Subcommand | Description |
-|------------|-------------|
-| `add <PATH>` | Add a new scan source. |
-| `list` | List all configured scan sources. |
-| `remove <PATH_OR_ID>` | Remove a scan source by path or ID. |
-| `ignore <PATTERNS>` | Set global ignore rules (comma-separated). |
-| `path` | Show the configuration file location. |
+| 子命令 | 说明 |
+|--------|------|
+| `add <PATH>` | 添加扫描源 |
+| `list` | 列出所有扫描源 |
+| `remove <PATH_OR_ID>` | 移除扫描源 |
+| `ignore <PATTERNS>` | 设置全局忽略规则（逗号分隔） |
+| `path` | 显示配置文件路径 |
 
-#### `workflow`
+### `workflow`
 
 ```bash
 getlatestrepo workflow [NAME] [OPTIONS]
 ```
 
-| Option | Description |
-|--------|-------------|
-| `--list` | List all available workflows. |
-| `--dry-run` | Show the execution plan without running it. |
-| `--silent` | Silent mode (returns only exit code). |
-| `-j, --jobs <N>` | Override default concurrency. |
-| `-t, --timeout <SECS>` | Override default timeout. |
-| `--yes` | Auto-confirm prompts (only for `pull-safe`). |
-| `--diff-after` | Show new commits after pull (only for `pull-safe` / `pull-force`). |
-| `--no-pull-guard` | Disable pull safety check (only for `pull-safe`). |
+| 参数 | 说明 |
+|------|------|
+| `--list` | 列出所有可用工作流 |
+| `--dry-run` | 只显示执行计划，不实际运行 |
+| `--silent` | 静默模式（仅返回退出码） |
+| `-j, --jobs <N>` | 覆盖默认并发数 |
+| `-t, --timeout <SECS>` | 覆盖默认超时 |
+| `--yes` | 自动确认提示（仅 `pull-safe`） |
+| `--diff-after` | pull 后显示新提交（仅 pull 类工作流） |
+| `--no-pull-guard` | 禁用拉取安全检查（仅 `pull-safe`） |
 
-#### `discard`
+### `discard`
 
 ```bash
 getlatestrepo discard [PATH] [OPTIONS]
 ```
 
-| Option | Description |
-|--------|-------------|
-| `--yes` | Skip the confirmation prompt. |
-
-### Built-in Workflows
-
-| Workflow | What it does |
-|----------|--------------|
-| `daily` | Fetch → Scan → Show a concise status summary. |
-| `check` | Scan only (no fetch), show repositories needing attention. |
-| `report` | Fetch → Scan → Generate an HTML/Markdown report. |
-| `ci` | Fetch → Scan → Check behind (returns error code if behind > 0). |
-| `pull-safe` | Fetch → Safe pull (ff-only, skips dirty repositories). |
-| `pull-force` | Fetch → Force pull (stash → pull → pop). |
+| 参数 | 说明 |
+|------|------|
+| `--yes` | 跳过确认提示 |
 
 ---
 
-## 📁 Reports
+## 工作流引擎
 
-Generated reports are automatically archived under:
+工作流是 GetLatestRepo 的核心设计。每个工作流由多个步骤串联执行，覆盖从 fetch 到报告的完整流程。
+
+### 内置工作流
+
+| 工作流 | 步骤 | 说明 |
+|--------|------|------|
+| `daily` | fetch → scan | 日常巡检：拉取最新状态，终端展示汇总 |
+| `check` | scan（仅扫描） | 快速查看：不 fetch，只显示需要关注的仓库 |
+| `report` | fetch → scan（HTML） | 生成完整 HTML 报告，自动打开浏览器 |
+| `ci` | fetch → scan → check | CI 检查：有落后的仓库时返回错误码 |
+| `pull-safe` | fetch → scan → pull | 安全拉取：跳过有本地修改的仓库 |
+| `pull-force` | fetch → scan → stash → pull → pop | 强制拉取：自动 stash 本地修改 |
+| `pull-backup` | fetch → scan → hard reset | 备份同步：硬重置到远程状态，适合纯备份 |
+
+### 使用示例
+
+```bash
+# 日常巡检
+getlatestrepo workflow daily
+
+# CI 流水线集成（失败返回非零退出码）
+getlatestrepo workflow ci --silent
+
+# 安全批量拉取（自动跳过 dirty 仓库）
+getlatestrepo workflow pull-safe --yes --diff-after
+
+# 生成报告（自定义并发和超时）
+getlatestrepo workflow report --jobs 10 --timeout 60
+
+# 查看执行计划（不实际运行）
+getlatestrepo workflow pull-force --dry-run
+```
+
+---
+
+## 安全扫描机制
+
+在执行 fetch/pull 等网络操作前，GetLatestRepo 会自动进行安全预扫描：
+
+### 检测项
+
+| 类别 | 检测内容 |
+|------|----------|
+| **敏感文件变更** | `.env`、密钥文件（`.pem`、`id_rsa`）、CI 配置（`.github/workflows`、`Jenkinsfile`）、容器凭证（`.docker/config.json`、`kubeconfig`） |
+| **可疑代码模式** | `eval()`/`exec()` 调用、base64 解码、暗网地址、`curl \| sh`、`wget` 下载等 |
+| **未知提交者** | 不在已知贡献者列表中的新提交者 |
+
+### 风险等级
+
+| 等级 | 处理方式 |
+|------|----------|
+| Safe | 正常执行 |
+| Medium | 提示确认 |
+| High | 阻断操作 |
+
+可通过 `--no-security-check` 全局参数禁用安全扫描。
+
+---
+
+## 配置文件
+
+配置文件位于 `~/.config/getlatestrepo/config.toml`（可通过 `getlatestrepo config path` 查看）。
+
+### 默认配置
+
+```toml
+default_jobs = 5        # 默认并发数
+default_timeout = 30    # 默认超时（秒）
+default_depth = 5       # 默认扫描深度
+
+# 忽略规则
+ignore_patterns = [
+    ".git",
+    "node_modules",
+    "target",
+    "vendor",
+    ".idea",
+    ".vscode",
+]
+
+# 同步配置
+[sync]
+auto_sync = true        # 自动扫描新增仓库
+strict_sync = false     # 严格模式：数量不一致时全量扫描
+```
+
+### 环境变量
+
+| 变量 | 说明 |
+|------|------|
+| `GETLATESTREPO_CONFIG_DIR` | 覆盖配置目录路径 |
+| `HTTP_PROXY` / `HTTPS_PROXY` | 系统代理（也可用 `--proxy` 参数） |
+
+---
+
+## 报告系统
+
+生成的报告自动归档到：
 
 ```
 reports/YYYY/MM/DD/getlatestrepo-report-YYYYMMDD-HHMMSS.<ext>
 ```
 
-A `reports/latest.html` symlink always points to the newest HTML report.
+- `reports/latest.html` 符号链接始终指向最新的 HTML 报告
+- 支持终端表格、HTML（暗色主题）、Markdown 三种格式
+- HTML 报告支持自动打开浏览器
 
 ---
 
+## 技术栈
+
+| 组件 | 技术选型 |
+|------|----------|
+| CLI 框架 | clap 4.5 |
+| Git 操作 | libgit2（git2 crate） |
+| 异步运行时 | Tokio |
+| 数据库 | SQLite（rusqlite + WAL 模式） |
+| 终端输出 | comfy-table + colored + indicatif（进度条） |
+| HTML 模板 | Askama |
+| 配置格式 | TOML + JSON |
+
+### 构建优化
+
+Release 构建启用 LTO、单代码生成单元、符号剥离，确保二进制体积最小化且运行高效。
+
 ---
 
-## 🤝 Contributing
+## 常见问题
 
-Contributions are welcome! Please feel free to open issues or submit pull requests.
+### Q: 扫描速度慢怎么办？
+
+使用 `-d` 参数限制扫描深度，或在 `config.toml` 中调整 `default_depth`。对于大型目录树，适当减小深度可以显著提升速度。
+
+### Q: 如何排除特定目录？
+
+通过 `getlatestrepo config ignore <patterns>` 设置忽略规则，支持逗号分隔的多个模式。默认已忽略 `node_modules`、`target`、`vendor` 等常见目录。
+
+### Q: `pull-safe` 和 `pull-force` 有什么区别？
+
+- `pull-safe`：只拉取干净的仓库（无本地修改），有修改的仓库会被跳过
+- `pull-force`：自动 stash 本地修改 → pull → stash pop，适合批量同步但可能产生冲突
+
+### Q: 如何在 CI 中使用？
+
+```bash
+getlatestrepo workflow ci --silent
+if [ $? -ne 0 ]; then
+    echo "有仓库落后于远程"
+    exit 1
+fi
+```
+
+### Q: 代理不生效？
+
+优先级：`--proxy-url` > `--proxy` > 系统环境变量 `HTTP_PROXY`/`HTTPS_PROXY`。确保代理地址正确且可访问。
 
 ---
 
-## License
+## 贡献指南
 
-This project is dual-licensed:
+欢迎提交 Issue 和 Pull Request！
 
-- **AGPL-3.0-or-later** — For open-source and non-commercial use. See [LICENSE](LICENSE) for the full text.
-- **Commercial License** — For proprietary/closed-source or commercial use, please contact the author for a commercial license.
+1. Fork 本仓库
+2. 创建特性分支：`git checkout -b feature/your-feature`
+3. 提交更改：`git commit -m "feat: add your feature"`
+4. 推送分支：`git push origin feature/your-feature`
+5. 创建 Pull Request
 
-If you wish to use this software in a commercial product or service without disclosing your source code, you must obtain a separate commercial license from the copyright holder.
+### 开发环境
+
+```bash
+git clone https://github.com/xcjy8/GetLatestRepo.git
+cd GetLatestRepo
+cargo build
+cargo test
+```
+
+---
+
+## 版本日志
+
+| 版本 | 主要变更 |
+|------|----------|
+| v0.1.7 | 全量缺陷修复与安全加固 |
+| v0.1.6 | Rust Edition 2024、死代码清理、预扫描安全批次 |
+| v0.1.5 | 移除 git2 网络 fetch 路径，基于数据验证优化 |
+| v0.1.4 | fetch 双层架构、进度条精简与 git2 偏好缓存 |
+| v0.1.3 | 三层优雅关闭 + 启动自检 + 残留清理 |
+| v0.1.2 | 14 项缺陷修复（安全/并发/Git 状态/信号/阻塞 IO） |
+| v0.1.1 | P0/P1/P2 全量修复与安全重构 |
+| v0.1.0 | 初始发布 |
+
+完整变更记录见 [GitHub Releases](https://github.com/xcjy8/GetLatestRepo/releases)。
+
+---
+
+## 许可证
+
+本项目采用双许可模式：
+
+- **AGPL-3.0-or-later** — 用于开源和非商业用途，详见 [LICENSE](LICENSE)
+- **商业许可** — 用于闭源或商业用途，请联系作者获取商业许可
+
+如需在商业产品中使用本软件且不公开源代码，须从版权所有者处获取单独的商业许可。
+
+---
+
+## 作者
+
+**xcjy8** — [GitHub](https://github.com/xcjy8)
+
+项目地址：[https://github.com/xcjy8/GetLatestRepo](https://github.com/xcjy8/GetLatestRepo)

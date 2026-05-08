@@ -65,6 +65,9 @@ pub async fn execute(
             crate::workflow::WorkflowStep::PullForce { diff_after: da, .. } => {
                 *da = diff_after;
             }
+            crate::workflow::WorkflowStep::PullBackup { diff_after: da, .. } => {
+                *da = diff_after;
+            }
             _ => {}
         }
     }

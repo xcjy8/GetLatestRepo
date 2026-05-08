@@ -851,6 +851,150 @@ impl GitOps {
         result
     }
 
+    /// Backup pull: archive → stash (if dirty) → hard reset to remote → pop stash
+    ///
+    /// Designed for "pure backup" scenarios where the user only clones and wants to
+    /// guarantee the local copy mirrors the remote exactly. Automatically handles:
+    /// - Remote history rewrites (force push / rebase): old history archived via refs
+    /// - Local uncommitted changes (auto stash → reset → pop)
+    ///
+    /// Returns (PullForceOutcome, Option<archive_ref_name>).
+    /// The archive_ref_name is Some when remote history was rewritten and old HEAD
+    /// was preserved under refs/glr-archive/<branch>-<timestamp>.
+    pub fn pull_backup(path: &Path) -> Result<(PullForceOutcome, Option<String>)> {
+        let mut repo = Self::open(path)?;
+
+        let branch = Self::get_current_branch(&repo)?;
+        let branch_name = match branch {
+            Some(name) => name,
+            None => return Err(GetLatestRepoError::DetachedHead),
+        };
+
+        // 0. Archive old history if it would be lost by hard reset
+        let archive_ref = Self::maybe_archive_before_reset(&mut repo, &branch_name)?;
+
+        // 1. Stash local changes if dirty
+        let (is_dirty, _) = Self::check_dirty(&repo)?;
+        let stash_name = if is_dirty {
+            let name = format!("getlatestrepo-backup-{}",
+                chrono::Local::now().format("%Y%m%d-%H%M%S"));
+            let sig = repo.signature()?;
+            repo.stash_save(
+                &sig,
+                &name,
+                Some(git2::StashFlags::INCLUDE_UNTRACKED)
+            )?;
+            Some(name)
+        } else {
+            None
+        };
+
+        // 2. Hard reset to remote branch (handles diverged history)
+        let reset_result = (|| -> Result<()> {
+            let remote_name = Self::get_remote_name(&repo)?
+                .unwrap_or_else(|| "origin".to_string());
+            let remote_ref_name = format!("refs/remotes/{}/{}", remote_name, branch_name);
+
+            let remote_ref = repo.find_reference(&remote_ref_name)
+                .map_err(|_| GetLatestRepoError::RemoteBranchMissing)?;
+            let remote_oid = remote_ref.target()
+                .ok_or_else(|| GetLatestRepoError::RemoteBranchNoTarget)?;
+
+            let remote_obj = repo.find_object(remote_oid, None)
+                .map_err(|e| GetLatestRepoError::Other(anyhow::anyhow!(
+                    "无法找到远程提交对象: {}", e)))?;
+
+            let mut hard_opts = git2::build::CheckoutBuilder::new();
+            hard_opts.force();
+            repo.reset(&remote_obj, git2::ResetType::Hard, Some(&mut hard_opts))
+                .map_err(|e| GetLatestRepoError::Other(anyhow::anyhow!(
+                    "硬重置到远程分支失败: {}", e)))?;
+
+            Ok(())
+        })();
+
+        match reset_result {
+            Ok(()) => {
+                // 3. Pop stash if created
+                if let Some(stash_name) = stash_name {
+                    match repo.stash_pop(0, None) {
+                        Ok(()) => Ok((PullForceOutcome::Success, archive_ref)),
+                        Err(_) => {
+                            let conflict_files = Self::get_conflict_files(&mut repo);
+                            let stash_index = Self::find_stash_index(&mut repo, &stash_name);
+                            Ok((PullForceOutcome::Conflict {
+                                stash_name,
+                                conflict_files,
+                                stash_index,
+                            }, archive_ref))
+                        }
+                    }
+                } else {
+                    Ok((PullForceOutcome::Success, archive_ref))
+                }
+            }
+            Err(e) => {
+                if stash_name.is_some() {
+                    eprintln!("   ⚠️ 硬重置失败，但本地修改已保存到 stash。请手动恢复。");
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Check if hard reset would lose local branch history, and create archive ref if so.
+    ///
+    /// Creates two refs when archiving:
+    /// - refs/glr-archive/<branch>-<timestamp>  (point-in-time snapshot)
+    /// - refs/glr-archive/<branch>-latest       (always points to most recent archive)
+    ///
+    /// Returns the archive ref name if created, None if not needed (fast-forward or same commit).
+    fn maybe_archive_before_reset(repo: &mut git2::Repository, branch_name: &str) -> Result<Option<String>> {
+        let head_oid = match repo.head()?.target() {
+            Some(oid) => oid,
+            None => return Ok(None),
+        };
+
+        let remote_name = Self::get_remote_name(repo)?.unwrap_or_else(|| "origin".to_string());
+        let remote_ref_name = format!("refs/remotes/{}/{}", remote_name, branch_name);
+        let remote_oid = match repo.find_reference(&remote_ref_name).ok().and_then(|r| r.target()) {
+            Some(oid) => oid,
+            None => return Ok(None),
+        };
+
+        // Same commit: no update needed, no archive needed
+        if head_oid == remote_oid {
+            return Ok(None);
+        }
+
+        // Check if local HEAD is an ancestor of remote HEAD.
+        // graph_ahead_behind(head, remote):
+        //   ahead  = commits in head not in remote
+        //   behind = commits in remote not in head
+        // If ahead == 0: head is ancestor of remote (fast-forward), no archive needed.
+        // If ahead > 0:  head is NOT ancestor, history would be lost.
+        // If Err:        unrelated histories, archive needed.
+        let needs_archive = match repo.graph_ahead_behind(head_oid, remote_oid) {
+            Ok((ahead, _)) => ahead > 0,
+            Err(_) => true, // unrelated histories (complete rewrite)
+        };
+
+        if needs_archive {
+            let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+            let archive_ref = format!("refs/glr-archive/{}-{}", branch_name, timestamp);
+            let latest_ref = format!("refs/glr-archive/{}-latest", branch_name);
+
+            repo.reference(&archive_ref, head_oid, true,
+                &format!("getlatestrepo: archive {} before pull-backup", branch_name))?;
+            repo.reference(&latest_ref, head_oid, true,
+                &format!("getlatestrepo: latest archive for {}", branch_name))?;
+
+            Ok(Some(archive_ref))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Get recent N commits (used to display new commits after pull)
     pub fn get_recent_commits(path: &Path, count: usize) -> Result<Vec<String>> {
         let repo = Self::open(path)?;
@@ -1338,5 +1482,101 @@ mod tests {
         // 验证 HEAD 指向 B
         let head_oid = repo_after.head().unwrap().target().unwrap();
         assert_eq!(head_oid, c2, "HEAD should point to remote commit after pull");
+    }
+
+    // ==================== Pull-backup archive tests ====================
+
+    /// Helper: list all refs under refs/glr-archive/
+    fn list_archive_refs(path: &std::path::Path) -> Vec<String> {
+        let repo = match git2::Repository::open(path) {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+        let mut refs = Vec::new();
+        if let Ok(refs_iter) = repo.references_glob("refs/glr-archive/*") {
+            for r in refs_iter {
+                if let Ok(r) = r {
+                    if let Some(name) = r.name() {
+                        refs.push(name.to_string());
+                    }
+                }
+            }
+        }
+        refs
+    }
+
+    #[test]
+    fn test_pull_backup_fast_forward_no_archive() {
+        let (_tmp, path, c1) = create_repo_with_tracking();
+        // Remote advances: c1 -> c2
+        let c2 = add_commit_from_parent(&path, c1, "remote commit");
+        move_tracking_ref(&path, c2);
+
+        // HEAD is at c1, remote is at c2: fast-forward scenario
+        let result = GitOps::pull_backup(&path);
+        assert!(result.is_ok(), "Expected success, got: {:?}", result);
+
+        let (outcome, archive_ref) = result.unwrap();
+        assert!(matches!(outcome, PullForceOutcome::Success));
+        assert!(archive_ref.is_none(), "Fast-forward should not create archive ref");
+
+        // Verify no archive refs exist
+        let archives = list_archive_refs(&path);
+        assert!(archives.is_empty(), "Should have no archive refs for fast-forward");
+
+        // Verify HEAD moved to c2
+        let repo = git2::Repository::open(&path).unwrap();
+        let head_oid = repo.head().unwrap().target().unwrap();
+        assert_eq!(head_oid, c2, "HEAD should point to remote commit");
+    }
+
+    #[test]
+    fn test_pull_backup_force_push_creates_archive() {
+        let (_tmp, path, c1) = create_repo_with_tracking();
+        // Local advances: c1 -> c2_local
+        let c2_local = add_commit(&path, "local commit");
+
+        // Remote force-pushed to a different branch: c1 -> c3_remote
+        let c3_remote = add_commit_from_parent(&path, c1, "remote rewritten commit");
+        move_tracking_ref(&path, c3_remote);
+
+        // HEAD is at c2_local, remote is at c3_remote: diverged, needs archive
+        let result = GitOps::pull_backup(&path);
+        assert!(result.is_ok(), "Expected success, got: {:?}", result);
+
+        let (outcome, archive_ref) = result.unwrap();
+        assert!(matches!(outcome, PullForceOutcome::Success));
+        assert!(archive_ref.is_some(), "Force-push should create archive ref");
+
+        // Verify archive refs exist
+        let archives = list_archive_refs(&path);
+        assert!(!archives.is_empty(), "Should have archive refs after force-push");
+        assert!(archives.iter().any(|r| r.contains("main-")), "Should have main archive ref");
+        assert!(archives.iter().any(|r| r.contains("main-latest")), "Should have main-latest ref");
+
+        // Verify HEAD moved to c3_remote
+        let repo = git2::Repository::open(&path).unwrap();
+        let head_oid = repo.head().unwrap().target().unwrap();
+        assert_eq!(head_oid, c3_remote, "HEAD should point to new remote commit");
+
+        // Verify old history is still accessible via archive ref
+        let archive_ref_name = archive_ref.unwrap();
+        let archive_oid = repo.find_reference(&archive_ref_name).unwrap().target().unwrap();
+        assert_eq!(archive_oid, c2_local, "Archive ref should point to old local HEAD");
+    }
+
+    #[test]
+    fn test_pull_backup_up_to_date_no_archive() {
+        let (_tmp, path, _c1) = create_repo_with_tracking();
+        // Already up to date
+        let result = GitOps::pull_backup(&path);
+        assert!(result.is_ok(), "Expected success, got: {:?}", result);
+
+        let (outcome, archive_ref) = result.unwrap();
+        assert!(matches!(outcome, PullForceOutcome::Success));
+        assert!(archive_ref.is_none(), "Up-to-date should not create archive ref");
+
+        let archives = list_archive_refs(&path);
+        assert!(archives.is_empty(), "Should have no archive refs when up to date");
     }
 }
