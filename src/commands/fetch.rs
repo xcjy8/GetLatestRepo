@@ -6,6 +6,11 @@ use colored::Colorize;
 use crate::commands::ensure_initialized;
 use crate::fetcher::Fetcher;
 use crate::git::ProxyConfig;
+use crate::scanner::Scanner;
+
+fn auto_sync_enabled(config: &crate::config::AppConfig) -> bool {
+    config.sync.auto_sync
+}
 
 /// Execute fetch command
 pub async fn execute(
@@ -15,20 +20,32 @@ pub async fn execute(
     auto_skip_high_risk: bool,
     proxy_config: Option<ProxyConfig>,
 ) -> Result<()> {
-    let (_config, db) = ensure_initialized()?;
+    let (config, db) = ensure_initialized()?;
 
-    let repos = db.list_repositories()?;
+    if auto_sync_enabled(&config) {
+        let sync = crate::sync::RepoSync::new(config.sync.auto_sync);
+        let sync_status = sync.ensure_synced(&config.scan_sources, &db, true).await?;
+        if sync_status.needs_scan() {
+            println!("{} {}", "ℹ".blue(), sync_status.description());
+        }
+    }
+
+    let mut repos = db.list_repositories()?;
 
     if repos.is_empty() {
-        println!(
-            "{} No repository records in database, please run: getlatestrepo scan",
-            "!".yellow()
-        );
-        return Ok(());
+        let scanned = Scanner::scan_all(&config.scan_sources, &db, true, jobs).await?;
+        if scanned.is_empty() {
+            println!(
+                "{} 数据库中没有仓库记录，请先运行：getlatestrepo scan",
+                "!".yellow()
+            );
+            return Ok(());
+        }
+        repos = scanned;
     }
 
     println!(
-        "{} Starting fetch of {} repositories (concurrency: {}, timeout: {}s)...",
+        "{} 开始 fetch {} 个仓库（并发：{}，超时：{} 秒）...",
         "▶".cyan(),
         repos.len(),
         jobs,
@@ -42,9 +59,9 @@ pub async fn execute(
     if let Some(ref proxy) = proxy_config {
         if proxy.enabled {
             fetcher = fetcher.with_proxy(proxy.clone());
-            println!("{} Using proxy: {}", "ℹ".blue(), proxy.http_proxy);
+            println!("{} 使用代理：{}", "ℹ".blue(), proxy.http_proxy);
         } else {
-            println!("{} Proxy configured but not enabled: {} (use --proxy to enable)", "ℹ".blue(), proxy.http_proxy);
+            println!("{} 已配置代理但未启用：{}（使用 --proxy 启用）", "ℹ".blue(), proxy.http_proxy);
         }
     }
 
@@ -53,4 +70,20 @@ pub async fn execute(
     summary.print_summary();
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fetch_uses_configured_auto_sync_flag() {
+        let mut config = crate::config::AppConfig::default();
+
+        config.sync.auto_sync = false;
+        assert!(!auto_sync_enabled(&config));
+
+        config.sync.auto_sync = true;
+        assert!(auto_sync_enabled(&config));
+    }
 }

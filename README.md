@@ -2,7 +2,7 @@
 
 # GetLatestRepo
 
-[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange?logo=rust)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust)](https://www.rust-lang.org)
 [![CI](https://github.com/xcjy8/GetLatestRepo/actions/workflows/ci.yml/badge.svg)](https://github.com/xcjy8/GetLatestRepo/actions)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -73,7 +73,7 @@ sudo cp target/release/getlatestrepo /usr/local/bin/
 
 ### 环境要求
 
-- Rust 1.70+
+- Rust 1.85+（使用 Rust Edition 2024）
 - Git（系统已安装）
 
 ### 从 Release 下载
@@ -392,6 +392,8 @@ cargo test
 
 | 版本 | 主要变更 |
 |------|----------|
+| v0.1.9 | 依赖安全升级、自动同步修复与发布前质量加固 |
+| v0.1.8 | pull-backup 工作流与 README 中英文重构 |
 | v0.1.7 | 全量缺陷修复与安全加固 |
 | v0.1.6 | Rust Edition 2024、死代码清理、预扫描安全批次 |
 | v0.1.5 | 移除 git2 网络 fetch 路径，基于数据验证优化 |

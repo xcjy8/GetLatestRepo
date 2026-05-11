@@ -138,9 +138,9 @@ impl Fetcher {
                     })
                 ).await {
                     Ok(Ok(Ok(r))) => r,
-                    // Scan failed (timeout/error/panic) — treat as risky (fail-closed)
+                    // 扫描失败（超时/错误/panic）时按高风险处理，保持 fail-closed。
                     _ => {
-                        eprintln!("  ⚠️ Security scan failed for '{}', treating as high-risk", repo_name_for_err);
+                        eprintln!("  ⚠️ 仓库 '{}' 安全扫描失败，已按高风险处理", repo_name_for_err);
                         return Some((path_str, String::new()));
                     }
                 };
@@ -179,9 +179,8 @@ impl Fetcher {
             return rejected;
         }
 
-        // Check if stdin is a TTY
         if !std::io::stdin().is_terminal() {
-            eprintln!("Warning: stdin is not a TTY, defaulting to reject all risky repositories");
+            eprintln!("警告：stdin 不是 TTY，默认拒绝所有高风险仓库");
             return risky_paths.clone();
         }
 
@@ -190,13 +189,13 @@ impl Fetcher {
                 continue;
             }
 
-            eprint!("Continue fetch '{}'? [y/N] ", repo.name);
+            eprint!("是否继续 fetch 仓库 '{}'? [y/N] ", repo.name);
             let _ = std::io::stdout().flush();
 
             let mut input = String::new();
             match std::io::stdin().read_line(&mut input) {
                 Ok(_) if input.trim().eq_ignore_ascii_case("y") => {
-                    // User confirmed, proceed with fetch
+                    // 用户确认，继续 fetch。
                 }
                 _ => {
                     rejected.insert(repo.path.clone());
@@ -286,7 +285,7 @@ impl Fetcher {
                     return (original_repo, repo, FetchResultModel {
                         repo_path: original_path.clone(),
                         success: false,
-                        error: Some(format!("Repository path does not exist: {}", original_path)),
+                        error: Some(format!("仓库路径不存在: {}", original_path)),
                         duration_ms: start.elapsed().as_millis() as u64,
                         retry_count: 0,
                     }, None, false);
@@ -313,7 +312,7 @@ impl Fetcher {
                     let remaining = overall_deadline.saturating_duration_since(tokio::time::Instant::now());
                     if remaining.is_zero() {
                         fetch_status = FetchStatus::NetworkError {
-                            message: format!("Overall retry timeout exceeded (>{}s)", timeout_secs.saturating_mul(2))
+                            message: format!("整体重试超时 (>{} 秒)", timeout_secs.saturating_mul(2))
                         };
                         break;
                     }
@@ -329,10 +328,10 @@ impl Fetcher {
                     ).await {
                         Ok(Ok((status, _))) => status,
                         Ok(Err(_)) => {
-                            FetchStatus::OtherError { message: "Task was cancelled".to_string() }
+                            FetchStatus::OtherError { message: "任务已取消".to_string() }
                         }
                         Err(_) => {
-                            FetchStatus::NetworkError { message: format!("Timeout ({}s)", attempt_timeout.as_secs()) }
+                            FetchStatus::NetworkError { message: format!("超时 ({} 秒)", attempt_timeout.as_secs()) }
                         }
                     };
 
@@ -369,8 +368,8 @@ impl Fetcher {
                     ).await {
                         Ok(Ok(Ok(path))) => Ok(path),
                         Ok(Ok(Err(e))) => Err(e),
-                        Ok(Err(_)) => Err(anyhow::anyhow!("Move task panicked")),
-                        Err(_) => Err(anyhow::anyhow!("Move operation timed out ({}s)", timeout_secs)),
+                        Ok(Err(_)) => Err(anyhow::anyhow!("移动任务 panic")),
+                        Err(_) => Err(anyhow::anyhow!("移动操作超时 ({} 秒)", timeout_secs)),
                     };
                     
                     match move_result {
@@ -405,7 +404,7 @@ impl Fetcher {
                             let result = FetchResultModel {
                                 repo_path: original_path,
                                 success: false,
-                                error: Some(format!("{} (Move failed: {})", 
+                                error: Some(format!("{}（移动失败: {}）", 
                                     fetch_status.error_message().unwrap_or_default(), e)),
                                 duration_ms: start.elapsed().as_millis() as u64,
                                 retry_count,
@@ -441,8 +440,8 @@ impl Fetcher {
                     ).await {
                         Ok(Ok(Ok(path))) => Ok(path),
                         Ok(Ok(Err(e))) => Err(e),
-                        Ok(Err(_)) => Err(anyhow::anyhow!("Restore task panicked")),
-                        Err(_) => Err(anyhow::anyhow!("Restore operation timed out ({}s)", timeout_secs)),
+                        Ok(Err(_)) => Err(anyhow::anyhow!("恢复任务 panic")),
+                        Err(_) => Err(anyhow::anyhow!("恢复操作超时 ({} 秒)", timeout_secs)),
                     };
                     
                     match restore_result {
@@ -469,7 +468,7 @@ impl Fetcher {
                             let result = FetchResultModel {
                                 repo_path: original_path,
                                 success: true,
-                                error: Some(format!("Fetch succeeded, but restore from needauth failed: {}", e)),
+                                error: Some(format!("Fetch 成功，但从 needauth 恢复失败: {}", e)),
                                 duration_ms: start.elapsed().as_millis() as u64,
                                 retry_count,
                             };
@@ -532,7 +531,7 @@ impl Fetcher {
                             results.push(exec_result);
                         }
                         Err(e) => {
-                            eprintln!("  │   {} Task panicked: {}", "⚠️".yellow(), e);
+                            eprintln!("  │   {} 任务 panic: {}", "⚠️".yellow(), e);
                             // Task panic 时不推入空记录，避免下游数据库操作使用空路径导致异常。
                             // 统计信息在 fetch_and_update 中通过 repos.len() - results.len() 补偿。
                             if let Some(ref pb) = main_pb {
@@ -544,7 +543,7 @@ impl Fetcher {
                 Ok(None) => break,
                 Err(_) => {
                     if crate::signal_handler::is_shutdown_requested() {
-                        eprintln!("  ⚠️  Interrupt received, cancelling remaining tasks");
+                        eprintln!("  ⚠️  收到中断信号，正在取消剩余任务");
                         break;
                     }
                 }
@@ -557,7 +556,7 @@ impl Fetcher {
         }
         
         if !moved_repos.is_empty() {
-            println!("  ├─ {} The following repositories were moved to needauth/:", "📁".yellow());
+            println!("  ├─ {} 以下仓库已移动到 needauth/:", "📁".yellow());
             for (i, name) in moved_repos.iter().enumerate() {
                 let is_last = i == moved_repos.len() - 1;
                 let corner = if is_last { "└─" } else { "├─" };
@@ -566,7 +565,7 @@ impl Fetcher {
         }
         
         if !restored_repos.is_empty() {
-            println!("  ├─ {} The following repositories were restored from needauth/:", "📁".green());
+            println!("  ├─ {} 以下仓库已从 needauth/ 恢复:", "📁".green());
             for (i, name) in restored_repos.iter().enumerate() {
                 let is_last = i == restored_repos.len() - 1;
                 let corner = if is_last { "└─" } else { "├─" };
@@ -664,26 +663,26 @@ impl Fetcher {
 
         // 2. Ensure parent directory exists and is resolvable (create before move)
         let parent = to.parent()
-            .ok_or_else(|| anyhow::anyhow!("Target path has no parent directory: {}", to.display()))?;
+            .ok_or_else(|| anyhow::anyhow!("目标路径没有父目录: {}", to.display()))?;
         
         // 3. Create parent directory (if it doesn't exist)
         fs::create_dir_all(parent)
-            .with_context(|| format!("Unable to create target parent directory: {}", parent.display()))?;
+            .with_context(|| format!("无法创建目标父目录: {}", parent.display()))?;
         
         // 4. canonicalize parent directory to get absolute path
         let parent_canonical = parent.canonicalize()
-            .with_context(|| format!("Unable to resolve parent directory: {}", parent.display()))?;
+            .with_context(|| format!("无法解析父目录: {}", parent.display()))?;
         
         // 5. Build canonicalized target path (using parent canonical path + target file name)
         let file_name = to.file_name()
-            .ok_or_else(|| anyhow::anyhow!("Unable to get target file name: {}", to.display()))?;
+            .ok_or_else(|| anyhow::anyhow!("无法获取目标文件名: {}", to.display()))?;
         let to_canonical = parent_canonical.join(file_name);
         
         // 6. Strict verification: target path must be a child of parent directory
         // Note: starts_with on Path is safe here because parent directory is canonicalized
         if !to_canonical.starts_with(&parent_canonical) {
             return Err(anyhow::anyhow!(
-                "Path traversal detected: target path '{}' is not inside expected directory '{}'  inside",
+                "检测到路径遍历风险：目标路径 '{}' 不在预期目录 '{}' 内",
                 to_canonical.display(),
                 parent_canonical.display()
             ));
@@ -692,13 +691,13 @@ impl Fetcher {
         // 7. Verify target path is within the expected parent directory (defense in depth)
         if !expected_parent.exists() {
             fs::create_dir_all(expected_parent)
-                .with_context(|| format!("Unable to create expected parent directory: {}", expected_parent.display()))?;
+                .with_context(|| format!("无法创建预期父目录: {}", expected_parent.display()))?;
         }
         let expected_canonical = expected_parent.canonicalize()
-            .with_context(|| format!("Unable to resolve expected parent directory: {}", expected_parent.display()))?;
+            .with_context(|| format!("无法解析预期父目录: {}", expected_parent.display()))?;
         if !to_canonical.starts_with(&expected_canonical) {
             return Err(anyhow::anyhow!(
-                "Path traversal detected: target path '{}' is not inside expected directory '{}'",
+                "检测到路径遍历风险：目标路径 '{}' 不在预期目录 '{}' 内",
                 to_canonical.display(),
                 expected_canonical.display()
             ));
@@ -726,7 +725,7 @@ impl Fetcher {
             if target_url.is_some() && upstream_url.is_some() && target_url.as_deref() != upstream_url {
                 // Same name but different author, needs renaming
                 let renamed = Self::find_unique_repo_name(to)?;
-                eprintln!("   ⚠️ A same-name but different-author repo already exists in needauth, renamed to: {}", 
+                eprintln!("   ⚠️ needauth 中已存在同名但来源不同的仓库，已重命名为: {}", 
                     renamed.file_name().unwrap_or_default().to_string_lossy());
                 renamed
             } else {
@@ -741,7 +740,7 @@ impl Fetcher {
         // Note: if final_to is renamed to repo-2 etc., may need to create new parent directory
         if let Some(parent) = final_to.parent() {
             fs::create_dir_all(parent)
-                .with_context(|| format!("Unable to create final parent directory: {}", parent.display()))?;
+                .with_context(|| format!("无法创建最终父目录: {}", parent.display()))?;
         }
 
         // ── Two-phase atomic move ──────────────────────────────────────────────
@@ -756,7 +755,7 @@ impl Fetcher {
             tmp_path = Self::unique_temp_path(&final_to);
             if let Err(e) = fs::rename(&final_to, &tmp_path) {
                 return Err(anyhow::anyhow!(
-                    "Unable to move existing repository to temp location '{}': {}",
+                    "无法将现有仓库移动到临时位置 '{}': {}",
                     tmp_path.display(),
                     e
                 ));
@@ -786,7 +785,7 @@ impl Fetcher {
         if !tmp_path.as_os_str().is_empty()
             && let Err(e) = fs::remove_dir_all(&tmp_path) {
                 eprintln!(
-                    "Warning: unable to clean up temp directory '{}': {}. Please delete it manually.",
+                    "警告：无法清理临时目录 '{}': {}。请手动删除。",
                     tmp_path.display(),
                     e
                 );
@@ -821,18 +820,18 @@ impl Fetcher {
         // 且 contains("..") 无法防御 Unicode 编码绕过（如 %2e%2e），还可能误报合法路径（如 foo..bar）。
 
         let parent = to.parent()
-            .ok_or_else(|| anyhow::anyhow!("Target path has no parent directory: {}", to.display()))?;
+            .ok_or_else(|| anyhow::anyhow!("目标路径没有父目录: {}", to.display()))?;
 
         let parent_canonical = parent.canonicalize()
-            .with_context(|| format!("Unable to resolve parent directory: {}", parent.display()))?;
+            .with_context(|| format!("无法解析父目录: {}", parent.display()))?;
 
         let file_name = to.file_name()
-            .ok_or_else(|| anyhow::anyhow!("Unable to get target file name: {}", to.display()))?;
+            .ok_or_else(|| anyhow::anyhow!("无法获取目标文件名: {}", to.display()))?;
         let to_canonical = parent_canonical.join(file_name);
 
         if !to_canonical.starts_with(&parent_canonical) {
             return Err(anyhow::anyhow!(
-                "Path traversal detected: target path '{}' is not inside expected directory '{}'",
+                "检测到路径遍历风险：目标路径 '{}' 不在预期目录 '{}' 内",
                 to_canonical.display(),
                 parent_canonical.display()
             ));
@@ -841,13 +840,13 @@ impl Fetcher {
         // Verify target path is within the expected parent directory (defense in depth)
         if !expected_parent.exists() {
             fs::create_dir_all(expected_parent)
-                .with_context(|| format!("Unable to create expected parent directory: {}", expected_parent.display()))?;
+                .with_context(|| format!("无法创建预期父目录: {}", expected_parent.display()))?;
         }
         let expected_canonical = expected_parent.canonicalize()
-            .with_context(|| format!("Unable to resolve expected parent directory: {}", expected_parent.display()))?;
+            .with_context(|| format!("无法解析预期父目录: {}", expected_parent.display()))?;
         if !to_canonical.starts_with(&expected_canonical) {
             return Err(anyhow::anyhow!(
-                "Path traversal detected: target path '{}' is not inside expected directory '{}'",
+                "检测到路径遍历风险：目标路径 '{}' 不在预期目录 '{}' 内",
                 to_canonical.display(),
                 expected_canonical.display()
             ));
@@ -870,7 +869,7 @@ impl Fetcher {
                 if from_path.exists()
                     && let Err(e) = std::fs::remove_dir_all(from_path) {
                         return Err(anyhow::anyhow!(
-                            "Failed to clean up needauth copy at '{}' after detecting duplicate at target: {}",
+                            "检测到目标位置已有重复仓库后，无法清理 needauth 副本 '{}': {}",
                             from_path.display(), e
                         ));
                     }
@@ -878,13 +877,13 @@ impl Fetcher {
             } else if to.join(".git").exists() {
                 // Different repository exists at target — don't overwrite
                 return Err(anyhow::anyhow!(
-                    "Target path '{}' already contains a different repository, skipping restore",
+                    "目标路径 '{}' 已包含另一个仓库，跳过恢复",
                     to.display()
                 ));
             } else {
                 // Non-git directory exists at target — don't overwrite
                 return Err(anyhow::anyhow!(
-                    "Target path '{}' already exists and is not a git repository, skipping restore",
+                    "目标路径 '{}' 已存在且不是 Git 仓库，跳过恢复",
                     to.display()
                 ));
             }
@@ -892,12 +891,12 @@ impl Fetcher {
 
         // ── Ensure parent directory exists ──────────────────────────────────────────────
         fs::create_dir_all(parent)
-            .with_context(|| format!("Unable to create parent directory: {}", parent.display()))?;
+            .with_context(|| format!("无法创建父目录: {}", parent.display()))?;
 
         // ── Two-phase atomic move ──────────────────────────────────────────────
         if let Err(e) = fs::rename(from, &to_canonical) {
             return Err(anyhow::anyhow!(
-                "Unable to move repository from '{}' to '{}': {}",
+                "无法将仓库从 '{}' 移动到 '{}': {}",
                 from, to_canonical.display(), e
             ));
         }
@@ -922,9 +921,9 @@ impl Fetcher {
     /// Format: repo-name-2, repo-name-3, ...
     fn find_unique_repo_name(base: &std::path::Path) -> Result<std::path::PathBuf, anyhow::Error> {
         let parent = base.parent()
-            .ok_or_else(|| anyhow::anyhow!("Unable to get parent directory"))?;
+            .ok_or_else(|| anyhow::anyhow!("无法获取父目录"))?;
         let name = base.file_name()
-            .ok_or_else(|| anyhow::anyhow!("Unable to get repository name"))?
+            .ok_or_else(|| anyhow::anyhow!("无法获取仓库名称"))?
             .to_string_lossy();
         
         // Try repo-name-2, repo-name-3, ...
@@ -936,7 +935,7 @@ impl Fetcher {
         }
         
         // Theoretically unreachable
-        Err(anyhow::anyhow!("Unable to find a unique repository"))
+        Err(anyhow::anyhow!("无法找到唯一的仓库名称"))
     }
 
     /// Generate a non-conflicting temp path
@@ -1032,29 +1031,29 @@ impl Fetcher {
         // DB failures are logged but don't abort the batch — fetch results are still valid.
         let db_result = tokio::task::spawn_blocking(move || -> Result<()> {
             let db = Database::open()
-                .map_err(|e| { eprintln!("Failed to open database for fetch update: {}", e); e })?;
+                .map_err(|e| { eprintln!("fetch 更新时无法打开数据库: {}", e); e })?;
             for exec_result in exec_results {
                 // 防御性过滤：跳过空路径记录（通常由 task panic 导致）
                 if exec_result.current_repo.path.is_empty() {
-                    eprintln!("Warning: 跳过空路径记录（task 可能 panic），避免污染数据库");
+                    eprintln!("警告：跳过空路径记录（task 可能 panic），避免污染数据库");
                     continue;
                 }
                 if exec_result.success
                     && let Err(e) = db.update_fetch_time(exec_result.db_path()) {
-                        eprintln!("Update fetch time failed '{}': {}", crate::utils::sanitize_path(exec_result.db_path()), e);
+                        eprintln!("更新 fetch 时间失败 '{}': {}", crate::utils::sanitize_path(exec_result.db_path()), e);
                     }
                 // If the repository was moved to need-auth, atomically update the database
                 if exec_result.moved_to_needauth {
                     let mut moved_repo = exec_result.current_repo.clone();
                     if let Err(e) = db.move_repository(&exec_result.original_repo.path, &mut moved_repo) {
-                        eprintln!("Move repository record failed '{}': {}", crate::utils::sanitize_path(exec_result.db_path()), e);
+                        eprintln!("移动仓库数据库记录失败 '{}': {}", crate::utils::sanitize_path(exec_result.db_path()), e);
                     }
                 }
                 // If the repository was restored from needauth (auth resolved), update the database path
                 if exec_result.restored_from_needauth {
                     let mut restored_repo = exec_result.current_repo.clone();
                     if let Err(e) = db.move_repository(&exec_result.original_repo.path, &mut restored_repo) {
-                        eprintln!("Restore repository record failed '{}': {}", crate::utils::sanitize_path(exec_result.db_path()), e);
+                        eprintln!("恢复仓库数据库记录失败 '{}': {}", crate::utils::sanitize_path(exec_result.db_path()), e);
                     }
                 }
             }
@@ -1064,8 +1063,8 @@ impl Fetcher {
         // DB update failures are non-fatal — fetch results are already captured in summary
         match db_result {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => eprintln!("Warning: database update after fetch had errors: {}", e),
-            Err(e) => eprintln!("Warning: database update task failed: {}", e),
+            Ok(Err(e)) => eprintln!("警告：fetch 后数据库更新出现错误: {}", e),
+            Err(e) => eprintln!("警告：fetch 后数据库更新任务失败: {}", e),
         }
 
         Ok(summary)
@@ -1097,7 +1096,7 @@ impl Fetcher {
         
         for repo in repos {
             if crate::signal_handler::is_shutdown_requested() {
-                eprintln!("  ⚠️  Interrupt received, skipping remaining repo scans");
+                eprintln!("  ⚠️  收到中断信号，跳过剩余仓库扫描");
                 break;
             }
 
@@ -1110,10 +1109,10 @@ impl Fetcher {
             
             // 检查路径是否存在
             if !std::path::Path::new(path_to_scan).exists() {
-                eprintln!("   {} Repository path does not exist, skip rescan: {}", "⚠️".yellow(), path_to_scan);
+                eprintln!("   {} 仓库路径不存在，跳过重新扫描: {}", "⚠️".yellow(), path_to_scan);
                 // 若路径不存在，从数据库中删除该记录
                 if let Err(e) = db.delete_repository(path_to_scan) {
-                    eprintln!("   {} Delete from database failed: {}", "⚠️".yellow(), e);
+                    eprintln!("   {} 从数据库删除失败: {}", "⚠️".yellow(), e);
                 }
                 continue;
             }
@@ -1128,8 +1127,8 @@ impl Fetcher {
             ).await {
                 Ok(Ok(Ok(r))) => Ok(r),
                 Ok(Ok(Err(e))) => Err(e),
-                Ok(Err(_)) => Err(crate::error::GetLatestRepoError::Other(anyhow::anyhow!("Inspect task panicked"))),
-                Err(_) => Err(crate::error::GetLatestRepoError::Other(anyhow::anyhow!("Inspect timed out ({}s)", self.timeout_secs))),
+                Ok(Err(_)) => Err(crate::error::GetLatestRepoError::Other(anyhow::anyhow!("Inspect 任务 panic"))),
+                Err(_) => Err(crate::error::GetLatestRepoError::Other(anyhow::anyhow!("Inspect 超时 ({} 秒)", self.timeout_secs))),
             };
             
             match inspect_result {
@@ -1155,13 +1154,13 @@ impl Fetcher {
                         db.upsert_repository(&mut updated)
                     };
                     if let Err(e) = db_result {
-                        eprintln!("Update repository failed '{}': {}", updated.name, e);
+                        eprintln!("更新仓库失败 '{}': {}", updated.name, e);
                     }
                     updated_repos.push(updated);
                 }
                 Err(e) => {
                     // 若扫描失败（例如仓库移动到了无效路径），记录错误但保留原始信息
-                    eprintln!("Rescan failed '{}': {}", repo.name, e);
+                    eprintln!("重新扫描失败 '{}': {}", repo.name, e);
                     
                     // If the repository was moved or restored, try to use the current info
                     if let Some(exec_result) = exec_result {
@@ -1170,16 +1169,16 @@ impl Fetcher {
                             let mut moved_repo = exec_result.current_repo.clone();
                             moved_repo.last_fetch_at = repo.last_fetch_at;
                             if let Err(e) = db.move_repository(&exec_result.original_repo.path, &mut moved_repo) {
-                                eprintln!("ERROR: DB move to needauth failed '{}': {}", moved_repo.name, e);
+                                eprintln!("错误：数据库记录移动到 needauth 失败 '{}': {}", moved_repo.name, e);
                                 // Attempt filesystem rollback: move repo back to original path
                                 let needauth_path = std::path::PathBuf::from(&moved_repo.path);
                                 let original_path = std::path::PathBuf::from(&exec_result.original_repo.path);
                                 if needauth_path.exists() && !original_path.exists() {
                                     if let Err(rollback_err) = std::fs::rename(&needauth_path, &original_path) {
-                                        eprintln!("CRITICAL: Filesystem rollback also failed '{}': {}", moved_repo.name, rollback_err);
-                                        eprintln!("  Repo is at '{}' but DB points to '{}'", needauth_path.display(), original_path.display());
+                                        eprintln!("严重错误：文件系统回滚也失败 '{}': {}", moved_repo.name, rollback_err);
+                                        eprintln!("  仓库位于 '{}'，但数据库仍指向 '{}'", needauth_path.display(), original_path.display());
                                     } else {
-                                        eprintln!("  Filesystem rollback succeeded: repo restored to '{}'", original_path.display());
+                                        eprintln!("  文件系统回滚成功：仓库已恢复到 '{}'", original_path.display());
                                         moved_repo.path = exec_result.original_repo.path.clone();
                                     }
                                 }
@@ -1191,7 +1190,7 @@ impl Fetcher {
                             let mut restored_repo = exec_result.current_repo.clone();
                             restored_repo.last_fetch_at = repo.last_fetch_at;
                             if let Err(e) = db.move_repository(&exec_result.original_repo.path, &mut restored_repo) {
-                                eprintln!("Restore repository record failed (rescan error) '{}': {}", restored_repo.name, e);
+                                eprintln!("恢复仓库数据库记录失败（重新扫描错误）'{}': {}", restored_repo.name, e);
                             }
                             updated_repos.push(restored_repo);
                             continue;
@@ -1227,7 +1226,7 @@ impl FetchSummary {
     }
 
     pub fn print_summary(&self) {
-        println!("\n📊 Fetch Results:");
+        println!("\n📊 Fetch 结果:");
         
         // 按错误类型分类
         let mut network_failures = Vec::new();
@@ -1237,12 +1236,19 @@ impl FetchSummary {
         for result in &self.results {
             if !result.success
                 && let Some(ref error) = result.error {
-                    if error.contains("Network error") || error.contains("Timeout") {
+                    if error.contains("网络错误")
+                        || error.contains("超时")
+                        || error.contains("Rate limited")
+                        || error.contains("rate limited")
+                        || error.contains("Timeout")
+                    {
                         network_failures.push(result);
-                    } else if error.contains("Authentication required") 
+                    } else if error.contains("需要认证") 
+                        || error.contains("仓库不存在")
+                        || error.contains("移动失败")
+                        || error.contains("移动任务 panic")
+                        || error.contains("Authentication required")
                         || error.contains("Repository not found")
-                        || error.contains("Move failed")
-                        || error.contains("Move task panicked")
                     {
                         auth_failures.push(result);
                     } else {
@@ -1252,16 +1258,16 @@ impl FetchSummary {
         }
         
         if self.failed > 0 {
-            println!("   Total: {} | succeeded: {} | failed: {} (network: {}, auth: {}, other: {})", 
+            println!("   总计: {} | 成功: {} | 失败: {}（网络: {}，认证/仓库: {}，其他: {}）", 
                 self.total, self.success, self.failed,
                 network_failures.len(), auth_failures.len(), other_failures.len());
         } else {
-            println!("   Total: {} | succeeded: {} | failed: {}", 
+            println!("   总计: {} | 成功: {} | 失败: {}", 
                 self.total, self.success, self.failed);
         }
         
         if self.failed > 0 {
-            println!("\n⚠️ Failure details:");
+            println!("\n⚠️ 失败详情:");
 
             let print_group = |label: &str, icon: &str, items: &[&FetchResultModel]| {
                 if items.is_empty() { return; }
@@ -1274,18 +1280,18 @@ impl FetchSummary {
                         .and_then(|n| n.to_str())
                         .unwrap_or(&result.repo_path);
                     let retry_info = if result.retry_count > 0 {
-                        format!(" (retried {}x)", result.retry_count)
+                        format!("（已重试 {} 次）", result.retry_count)
                     } else {
                         String::new()
                     };
                     println!("      {corner} {short_path}{retry_info}: {}",
-                        result.error.as_deref().unwrap_or("Unknown error"));
+                        result.error.as_deref().unwrap_or("未知错误"));
                 }
             };
 
-            print_group("Network errors", "🔌", &network_failures);
-            print_group("Auth/repo errors", "🔒", &auth_failures);
-            print_group("Other errors", "❌", &other_failures);
+            print_group("网络错误", "🔌", &network_failures);
+            print_group("认证/仓库错误", "🔒", &auth_failures);
+            print_group("其他错误", "❌", &other_failures);
         }
     }
 }

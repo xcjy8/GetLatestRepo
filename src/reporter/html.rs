@@ -41,10 +41,10 @@ struct RepositoryView {
 impl From<&Repository> for RepositoryView {
     fn from(repo: &Repository) -> Self {
         let (status_class, status_icon, status_text) = match repo.freshness {
-            Freshness::HasUpdates => ("status-behind", "🔴", "Need updates"),
-            Freshness::Synced => ("status-synced", "🟢", "Synced"),
-            Freshness::Unreachable => ("status-error", "⚫", "Unreachable"),
-            Freshness::NoRemote => ("status-none", "⚪", "No remote"),
+            Freshness::HasUpdates => ("status-behind", "🔴", "需要更新"),
+            Freshness::Synced => ("status-synced", "🟢", "已同步"),
+            Freshness::Unreachable => ("status-error", "⚫", "远程不可达"),
+            Freshness::NoRemote => ("status-none", "⚪", "无远程分支"),
         };
 
         Self {

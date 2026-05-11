@@ -10,14 +10,14 @@ use crate::db::Database;
 
 /// Execute init command
 pub async fn execute(path: PathBuf) -> Result<()> {
-    println!("{} Initializing GetLatestRepo...", "▶".cyan());
+    println!("{} 正在初始化 GetLatestRepo...", "▶".cyan());
 
     let mut config = AppConfig::load().unwrap_or_default();
 
     // Validate path
     let canonical = path
         .canonicalize()
-        .with_context(|| format!("Unable to access path: {}", path.display()))?;
+        .with_context(|| format!("无法访问路径：{}", path.display()))?;
 
     config.add_scan_source(&canonical)?;
 
@@ -30,14 +30,14 @@ pub async fn execute(path: PathBuf) -> Result<()> {
         db.upsert_scan_source(&mut source_clone)?;
     }
 
-    print_success(&format!("Added scan source: {}", canonical.display()));
-    print_info(&format!("Config file: {}", AppConfig::config_path()?.display()));
-    print_info(&format!("Database: {}", Database::db_path()?.display()));
+    print_success(&format!("已添加扫描源：{}", canonical.display()));
+    print_info(&format!("配置文件：{}", AppConfig::config_path()?.display()));
+    print_info(&format!("数据库：{}", Database::db_path()?.display()));
     println!();
-    println!("{} Next steps:", "▶".cyan());
-    println!("   1. Run `getlatestrepo scan` to scan repositories");
-    println!("   2. Run `getlatestrepo fetch` to check remote updates");
-    println!("   3. Run `getlatestrepo workflow daily` for automated daily checks");
+    println!("{} 下一步:", "▶".cyan());
+    println!("   1. 运行 `getlatestrepo scan` 扫描仓库");
+    println!("   2. 运行 `getlatestrepo fetch` 检查远程更新");
+    println!("   3. 运行 `getlatestrepo workflow daily` 执行自动化日常检查");
 
     Ok(())
 }

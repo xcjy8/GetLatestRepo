@@ -42,17 +42,17 @@ pub fn init() {
             return;
         }
 
-        eprintln!("\n⚠️  Interrupt received, shutting down gracefully...");
-        eprintln!("    Press Ctrl+C again to force quit immediately");
+        eprintln!("\n⚠️  收到中断信号，正在优雅关闭...");
+        eprintln!("    再按一次 Ctrl+C 可立即强制退出");
         SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
 
         // 10 秒超时与第二次 Ctrl+C 竞争
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(10)) => {
-                eprintln!("\n⚠️  Graceful shutdown timed out (10s), forcing exit");
+                eprintln!("\n⚠️  优雅关闭超时（10 秒），正在强制退出");
             }
             _ = tokio::signal::ctrl_c() => {
-                eprintln!("\n✗ Second interrupt received, forcing exit immediately");
+                eprintln!("\n✗ 收到第二次中断信号，立即强制退出");
             }
         }
 

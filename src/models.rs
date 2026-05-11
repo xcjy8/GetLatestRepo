@@ -129,18 +129,18 @@ impl Repository {
     /// Get change statistics summary
     pub fn change_summary(&self) -> String {
         if self.file_changes.is_empty() {
-            return format!("{} changed files", self.dirty_files.len());
+            return format!("{} 个文件有变更", self.dirty_files.len());
         }
         
         let staged = self.file_changes.iter().filter(|fc| fc.staged).count();
         let unstaged = self.file_changes.len() - staged;
         
         if staged > 0 && unstaged > 0 {
-            format!("{} staged, {} unstaged", staged, unstaged)
+            format!("{} 个已暂存，{} 个未暂存", staged, unstaged)
         } else if staged > 0 {
-            format!("{} staged", staged)
+            format!("{} 个已暂存", staged)
         } else {
-            format!("{} unstaged", unstaged)
+            format!("{} 个未暂存", unstaged)
         }
     }
 }
@@ -253,42 +253,42 @@ impl FileChange {
 
     /// Describe change impact and stash effect
     fn describe_change(status: &str, staged: bool) -> (String, String) {
-        let stage_info = if staged { "(staged) " } else { "" };
+        let stage_info = if staged { "（已暂存）" } else { "" };
         
         match status {
             "added" => {
-                let impact = format!("{}New file, will be committed", stage_info);
-                let stash = "After stash: file disappears, restored after pop (new file needs to be re-added)";
+                let impact = format!("{}新增文件，将进入提交", stage_info);
+                let stash = "stash 后：文件会暂时消失，pop 后恢复（新增文件可能需要重新 add）";
                 (impact, stash.to_string())
             }
             "modified" => {
-                let impact = format!("{}Content modified", stage_info);
-                let stash = "After stash: changes disappear, restored after pop";
+                let impact = format!("{}内容已修改", stage_info);
+                let stash = "stash 后：变更会暂时消失，pop 后恢复";
                 (impact, stash.to_string())
             }
             "deleted" => {
-                let impact = format!("{}File deleted", stage_info);
-                let stash = "After stash: file restored, re-deleted after pop";
+                let impact = format!("{}文件已删除", stage_info);
+                let stash = "stash 后：文件会暂时恢复，pop 后再次删除";
                 (impact, stash.to_string())
             }
             "renamed" => {
-                let impact = format!("{}File renamed", stage_info);
-                let stash = "After stash: original filename restored, renamed after pop";
+                let impact = format!("{}文件已重命名", stage_info);
+                let stash = "stash 后：暂时恢复原文件名，pop 后恢复重命名";
                 (impact, stash.to_string())
             }
             "untracked" => {
-                let impact = "Untracked new file (won't be committed)".to_string();
-                let stash = "After stash -u: file disappears, restored after pop";
+                let impact = "未跟踪的新文件（不会进入提交）".to_string();
+                let stash = "stash -u 后：文件会暂时消失，pop 后恢复";
                 (impact, stash.to_string())
             }
             "ignored" => {
-                let impact = "File ignored by .gitignore".to_string();
-                let stash = "Stash does not affect this file".to_string();
+                let impact = "文件已被 .gitignore 忽略".to_string();
+                let stash = "stash 不会影响此文件".to_string();
                 (impact, stash.to_string())
             }
             _ => {
-                let impact = format!("{}Unknown change", stage_info);
-                let stash = "Stash effect unknown, recommend manual check";
+                let impact = format!("{}未知变更", stage_info);
+                let stash = "stash 影响未知，建议手动检查";
                 (impact, stash.to_string())
             }
         }

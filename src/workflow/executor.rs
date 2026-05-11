@@ -51,11 +51,11 @@ fn print_repo_change_tree(repo: &impl RepoChangeView, is_last: bool, base_indent
     let meta = if is_last { "      " } else { "   │  " };
     println!("{}📁 {}", meta, repo.path().dimmed());
 
-    let branch_info = repo.branch().unwrap_or("unknown");
-    println!("{}🌿 Branch: {} | Status: {}", meta, branch_info.cyan(), repo.change_summary().yellow());
+    let branch_info = repo.branch().unwrap_or("未知");
+    println!("{}🌿 分支: {} | 状态: {}", meta, branch_info.cyan(), repo.change_summary().yellow());
 
     if !repo.file_changes().is_empty() {
-        println!("{}📝 Changed files ({}):", meta, repo.file_changes().len());
+        println!("{}📝 变更文件（{}）:", meta, repo.file_changes().len());
 
         for (j, change) in repo.file_changes().iter().enumerate() {
             let is_last_file = j == repo.file_changes().len() - 1;
@@ -72,12 +72,12 @@ fn print_repo_change_tree(repo: &impl RepoChangeView, is_last: bool, base_indent
 
             println!("{}{} {} {} {}",
                 file_pad, file_tree, status_icon, change.path,
-                if change.staged { "(staged)".green() } else { "(unstaged)".dimmed() }
+                if change.staged { "（已暂存）".green() } else { "（未暂存）".dimmed() }
             );
 
             let detail = if is_last_file { "         " } else { "   │     " };
-            println!("{}Impact: {}", detail, change.impact.dimmed());
-            println!("{}If pull-force is executed: {}", detail, change.stash_effect.dimmed());
+            println!("{}影响: {}", detail, change.impact.dimmed());
+            println!("{}执行 pull-force 后: {}", detail, change.stash_effect.dimmed());
 
             if !is_last_file {
                 println!("{}", file_pad);
@@ -149,7 +149,7 @@ impl WorkflowExecutor {
         let start = Instant::now();
 
         if !self.silent {
-            let title = format!("▶ workflow: {}", self.workflow.name);
+            let title = format!("▶ 工作流: {}", self.workflow.name);
             let desc = &self.workflow.description;
             println!("\n┌────────────────────────────────────────────────────────────┐");
             println!("│ {:<58} │", title.bold());
@@ -166,14 +166,14 @@ impl WorkflowExecutor {
         // Check initialization
         let config = AppConfig::load()?;
         if !config.is_initialized() {
-            anyhow::bail!("Not initialized. Please run: getlatestrepo init <path>");
+            anyhow::bail!("尚未初始化，请先运行: getlatestrepo init <path>");
         }
 
         let db = Database::open()?;
         let sources = config.scan_sources;
 
         if sources.is_empty() {
-            anyhow::bail!("No enabled scan sources");
+            anyhow::bail!("没有启用的扫描源");
         }
 
         let mut result = WorkflowResult::success();
@@ -183,9 +183,9 @@ impl WorkflowExecutor {
             // Check for graceful shutdown request before starting each step
             if crate::signal_handler::is_shutdown_requested() {
                 if !self.silent {
-                    println!("  {} Workflow interrupted by user, stopping early...", "⚠️".yellow());
+                    println!("  {} 用户中断工作流，提前停止...", "⚠️".yellow());
                 }
-                result.add_error("Workflow interrupted by user".to_string());
+                result.add_error("用户中断工作流".to_string());
                 break;
             }
 
@@ -197,7 +197,7 @@ impl WorkflowExecutor {
                     let timeout = timeout.unwrap_or(self.timeout);
 
                     if !self.silent {
-                        println!("  [{}] Fetch all repositories", format!("{}/{}", step_num, total_steps).cyan());
+                        println!("  [{}] Fetch 所有仓库", format!("{}/{}", step_num, total_steps).cyan());
                     }
 
                     match self.execute_fetch(&db, &sources, jobs, timeout).await {
@@ -219,7 +219,7 @@ impl WorkflowExecutor {
                                 } else {
                                     format!("{}", summary.failed).green()
                                 };
-                                println!("  ├─ {} Total: {} | succeeded: {} | failed: {}",
+                                println!("  ├─ {} 总计: {} | 成功: {} | 失败: {}",
                                     "▶".blue(),
                                     summary.total,
                                     success_str,
@@ -229,7 +229,7 @@ impl WorkflowExecutor {
                                 // Failed details (tree view)
                                 if summary.failed > 0 {
                                     println!("  │");
-                                    println!("  └─ {} Failed details:", "⚠".yellow());
+                                    println!("  └─ {} 失败详情:", "⚠".yellow());
                                     let failed_repos: Vec<_> = summary.results.iter()
                                         .filter(|r| !r.success)
                                         .collect();
@@ -237,7 +237,7 @@ impl WorkflowExecutor {
                                         let is_last = i == failed_repos.len() - 1;
                                         let corner = if is_last { "└─" } else { "├─" };
 
-                                        let error_msg = repo.error.as_deref().unwrap_or("Unknown error");
+                                        let error_msg = repo.error.as_deref().unwrap_or("未知错误");
                                         let short_error = if error_msg.chars().count() > 42 {
                                             let truncated: String = error_msg.chars().take(42).collect();
                                             format!("{truncated}...")
@@ -263,7 +263,7 @@ impl WorkflowExecutor {
                             if !self.silent {
                                 println!("  └─ {} {}", "✗".red(), e);
                             }
-                            result.add_error(format!("Fetch failed: {}", e));
+                            result.add_error(format!("Fetch 失败: {}", e));
                         }
                     }
                 }
@@ -271,11 +271,11 @@ impl WorkflowExecutor {
                 WorkflowStep::Scan { output, open, only_dirty_or_behind } => {
                     if !self.silent {
                         let output_name = match output {
-                            OutputFormat::Terminal => "Terminal",
+                            OutputFormat::Terminal => "终端",
                             OutputFormat::Html => "HTML",
                             OutputFormat::Markdown => "Markdown",
                         };
-                        print!("[{}] Scan and generate {} report... ",
+                        print!("[{}] 扫描并生成 {} 报告... ",
                             format!("{}/{}", step_num, total_steps).cyan(),
                             output_name
                         );
@@ -284,7 +284,7 @@ impl WorkflowExecutor {
                     match self.execute_scan(&db, &sources, *output, *open, *only_dirty_or_behind).await {
                         Ok(summary) => {
                             if !self.silent {
-                                println!("{} {} repos", "✓".green(), summary.total);
+                                println!("{} {} 个仓库", "✓".green(), summary.total);
                             }
 
                             result.repo_summary = Some(summary);
@@ -293,14 +293,14 @@ impl WorkflowExecutor {
                             if !self.silent {
                                 println!("{} {}", "✗".red(), e);
                             }
-                            result.add_error(format!("Scan failed: {}", e));
+                            result.add_error(format!("扫描失败: {}", e));
                         }
                     }
                 }
 
                 WorkflowStep::Check { condition, silent: check_silent } => {
                     if !self.silent && !check_silent {
-                        print!("[{}] Check condition... ", format!("{}/{}", step_num, total_steps).cyan());
+                        print!("[{}] 检查条件... ", format!("{}/{}", step_num, total_steps).cyan());
                     }
 
                     let check_result = self.execute_check(condition, &result);
@@ -308,7 +308,7 @@ impl WorkflowExecutor {
                     match check_result {
                         Ok(()) => {
                             if !self.silent && !check_silent {
-                                println!("{} Passed", "✓".green());
+                                println!("{} 通过", "✓".green());
                             }
                         }
                         Err(msg) => {
@@ -325,14 +325,14 @@ impl WorkflowExecutor {
                     let jobs = jobs.unwrap_or(self.jobs);
 
                     if !self.silent {
-                        println!("  [{}] Security pull", format!("{}/{}", step_num, total_steps).cyan());
+                        println!("  [{}] 安全 Pull", format!("{}/{}", step_num, total_steps).cyan());
                     }
 
                     match self.execute_pull_safe(&db, &sources, jobs, *confirm && !self.dry_run, *diff_after).await {
                         Ok(pull_result) => {
                             if !self.silent {
                                 if pull_result.total_count == 0 {
-                                    println!("  └─ {} No repositories need updates", "ℹ".blue());
+                                    println!("  └─ {} 没有需要更新的仓库", "ℹ".blue());
                                 } else {
                                     let success_str = pull_result.success_count.to_string().green();
                                     let skip_count = pull_result.skipped_repos.len() + pull_result.dirty_repos.len();
@@ -342,17 +342,17 @@ impl WorkflowExecutor {
                                     } else {
                                         pull_result.failed_count.to_string().green()
                                     };
-                                    println!("  └─ {} succeeded: {} | skipped: {} | failed: {}",
+                                    println!("  └─ {} 成功: {} | 跳过: {} | 失败: {}",
                                         "▶".blue(), success_str, skip_str, failed_str
                                     );
 
                                     // 展示成功拉取的仓库列表及最新提交时间
                                     if !pull_result.success_repos.is_empty() {
-                                        println!("     {} Successfully pulled repos:", "✓".green());
+                                        println!("     {} 成功拉取的仓库:", "✓".green());
                                         for (i, (name, time)) in pull_result.success_repos.iter().enumerate() {
                                             let is_last = i == pull_result.success_repos.len() - 1;
                                             let corner = if is_last { "└─" } else { "├─" };
-                                            let time_str = time.as_deref().unwrap_or("(no time info)");
+                                            let time_str = time.as_deref().unwrap_or("（无时间信息）");
                                             println!("        {} {} {}",
                                                 corner,
                                                 name.green(),
@@ -363,7 +363,7 @@ impl WorkflowExecutor {
                                     }
 
                                     if !pull_result.dirty_repos.is_empty() {
-                                        println!("     {} Repositories with local changes (manual handling needed):", "⚠️".yellow());
+                                        println!("     {} 存在本地变更的仓库（需要手动处理）:", "⚠️".yellow());
                                         println!();
                                         
                                         for (i, repo_info) in pull_result.dirty_repos.iter().enumerate() {
@@ -374,16 +374,15 @@ impl WorkflowExecutor {
                                             }
                                         }
                                         
-                                        // Add operation suggestions
                                         println!();
-                                        println!("     💡 Suggestions:");
-                                        println!("        ├─ Run 'pull-force' to auto stash → pull → pop");
-                                        println!("        ├─ Run 'git restore .' to discard all local changes");
-                                        println!("        └─ Or manually handle then run 'pull-safe'");
+                                        println!("     💡 建议:");
+                                        println!("        ├─ 运行 'pull-force' 自动 stash → pull → pop");
+                                        println!("        ├─ 运行 'git restore .' 丢弃所有本地变更");
+                                        println!("        └─ 或手动处理后再运行 'pull-safe'");
                                     }
 
                                     if *diff_after && !pull_result.pulled_repos.is_empty() {
-                                        println!("     {} New commits after Pull:", "📋".cyan());
+                                        println!("     {} Pull 后新增提交:", "📋".cyan());
                                         for (name, commits) in &pull_result.pulled_repos {
                                             if !commits.is_empty() {
                                                 println!("        {} {}:", "→".cyan(), name.bold());
@@ -405,7 +404,7 @@ impl WorkflowExecutor {
                             if !self.silent {
                                 println!("  └─ {} {}", "✗".red(), e);
                             }
-                            result.add_error(format!("Pull safe failed: {}", e));
+                            result.add_error(format!("安全 Pull 失败: {}", e));
                         }
                     }
                 }
@@ -414,7 +413,7 @@ impl WorkflowExecutor {
                     let jobs = jobs.unwrap_or(self.jobs);
 
                     if !self.silent {
-                        print!("[{}] Force pull... ", format!("{}/{}", step_num, total_steps).cyan());
+                        print!("[{}] 强制 Pull... ", format!("{}/{}", step_num, total_steps).cyan());
                     }
 
                     match self.execute_pull_force(&db, &sources, jobs, *diff_after).await {
@@ -426,7 +425,7 @@ impl WorkflowExecutor {
                                 );
 
                                 if !pull_result.conflict_repos.is_empty() {
-                                    println!("   {} repo(s) have stash pop conflicts, manual recovery needed:",
+                                    println!("   {} 个仓库发生 stash pop 冲突，需要手动恢复:",
                                         pull_result.conflict_repos.len().to_string().yellow());
                                     for (i, info) in pull_result.conflict_repos.iter().enumerate() {
                                         let is_last = i == pull_result.conflict_repos.len() - 1;
@@ -435,13 +434,13 @@ impl WorkflowExecutor {
                                         println!("     {} 📦 {}", repo_connector, info.name.bold());
 
                                         let stash_display = match info.stash_index {
-                                            Some(idx) => format!("{} (stash@{{{}}})", info.stash_message, idx),
+                                            Some(idx) => format!("{}（stash@{{{}}}）", info.stash_message, idx),
                                             None => info.stash_message.clone(),
                                         };
                                         println!("        ├─ stash: {}", stash_display);
 
                                         if !info.conflict_files.is_empty() {
-                                            println!("        ├─ Conflict files ({}):", info.conflict_files.len());
+                                            println!("        ├─ 冲突文件（{}）:", info.conflict_files.len());
                                             for (j, file) in info.conflict_files.iter().enumerate() {
                                                 let is_last_file = j == info.conflict_files.len() - 1;
                                                 let file_connector = if is_last_file { "└─" } else { "├─" };
@@ -449,16 +448,16 @@ impl WorkflowExecutor {
                                             }
                                         }
 
-                                        println!("        └─ Recovery command: git -C {} stash pop stash@{{index}}", info.path);
+                                        println!("        └─ 恢复命令: git -C {} stash pop stash@{{index}}", info.path);
                                     }
                                 }
                                 if pull_result.failed_count > 0 {
-                                    println!("   {} repositories failed",
+                                    println!("   {} 个仓库失败",
                                         pull_result.failed_count.to_string().red());
                                 }
 
                                 if *diff_after && !pull_result.pulled_repos.is_empty() {
-                                    println!("     {} New commits after Pull:", "📋".cyan());
+                                    println!("     {} Pull 后新增提交:", "📋".cyan());
                                     for (name, commits) in &pull_result.pulled_repos {
                                         if !commits.is_empty() {
                                             println!("        {} {}:", "→".cyan(), name.bold());
@@ -478,7 +477,7 @@ impl WorkflowExecutor {
                             if !self.silent {
                                 println!("{} {}", "✗".red(), e);
                             }
-                            result.add_error(format!("Pull force failed: {}", e));
+                            result.add_error(format!("强制 Pull 失败: {}", e));
                         }
                     }
                 }
@@ -487,16 +486,16 @@ impl WorkflowExecutor {
                     let jobs = jobs.unwrap_or(self.jobs);
 
                     if !self.silent {
-                        println!("  [{}] Backup pull (hard reset to remote)", format!("{}/{}", step_num, total_steps).cyan());
+                        println!("  [{}] 备份 Pull（hard reset 到远程）", format!("{}/{}", step_num, total_steps).cyan());
                     }
 
                     match self.execute_pull_backup(&db, &sources, jobs, *diff_after).await {
                         Ok(pull_result) => {
                             if !self.silent {
                                 if pull_result.total_count == 0 {
-                                    println!("  └─ {} No repositories need updates", "ℹ".blue());
+                                    println!("  └─ {} 没有需要更新的仓库", "ℹ".blue());
                                 } else {
-                                    println!("  └─ {} succeeded: {} | failed: {}",
+                                    println!("  └─ {} 成功: {} | 失败: {}",
                                         "▶".blue(),
                                         pull_result.success_count.to_string().green(),
                                         if pull_result.failed_count > 0 {
@@ -507,7 +506,7 @@ impl WorkflowExecutor {
                                     );
 
                                     if !pull_result.archived_repos.is_empty() {
-                                        println!("     {} History archived (remote rewritten):", "📦".cyan());
+                                        println!("     {} 已归档历史（远程历史被重写）:", "📦".cyan());
                                         for (i, (name, archive_ref)) in pull_result.archived_repos.iter().enumerate() {
                                             let is_last = i == pull_result.archived_repos.len() - 1;
                                             let corner = if is_last { "└─" } else { "├─" };
@@ -521,11 +520,11 @@ impl WorkflowExecutor {
                                     }
 
                                     if !pull_result.success_repos.is_empty() {
-                                        println!("     {} Successfully synced repos:", "✓".green());
+                                        println!("     {} 成功同步的仓库:", "✓".green());
                                         for (i, (name, time)) in pull_result.success_repos.iter().enumerate() {
                                             let is_last = i == pull_result.success_repos.len() - 1;
                                             let corner = if is_last { "└─" } else { "├─" };
-                                            let time_str = time.as_deref().unwrap_or("(no time info)");
+                                            let time_str = time.as_deref().unwrap_or("（无时间信息）");
                                             println!("        {} {} {}",
                                                 corner,
                                                 name.green(),
@@ -536,7 +535,7 @@ impl WorkflowExecutor {
                                     }
 
                                     if !pull_result.conflict_repos.is_empty() {
-                                        println!("     {} repo(s) have stash pop conflicts, manual recovery needed:",
+                                        println!("     {} 个仓库发生 stash pop 冲突，需要手动恢复:",
                                             pull_result.conflict_repos.len().to_string().yellow());
                                         for (i, info) in pull_result.conflict_repos.iter().enumerate() {
                                             let is_last = i == pull_result.conflict_repos.len() - 1;
@@ -545,13 +544,13 @@ impl WorkflowExecutor {
                                             println!("        {} 📦 {}", repo_connector, info.name.bold());
 
                                             let stash_display = match info.stash_index {
-                                                Some(idx) => format!("{} (stash@{{{}}})", info.stash_message, idx),
+                                                Some(idx) => format!("{}（stash@{{{}}}）", info.stash_message, idx),
                                                 None => info.stash_message.clone(),
                                             };
                                             println!("           ├─ stash: {}", stash_display);
 
                                             if !info.conflict_files.is_empty() {
-                                                println!("           ├─ Conflict files ({}):", info.conflict_files.len());
+                                                println!("           ├─ 冲突文件（{}）:", info.conflict_files.len());
                                                 for (j, file) in info.conflict_files.iter().enumerate() {
                                                     let is_last_file = j == info.conflict_files.len() - 1;
                                                     let file_connector = if is_last_file { "└─" } else { "├─" };
@@ -559,17 +558,17 @@ impl WorkflowExecutor {
                                                 }
                                             }
 
-                                            println!("           └─ Recovery command: git -C {} stash pop stash@{{index}}", info.path);
+                                            println!("           └─ 恢复命令: git -C {} stash pop stash@{{index}}", info.path);
                                         }
                                     }
 
                                     if pull_result.failed_count > 0 {
-                                        println!("     {} repositories failed",
+                                        println!("     {} 个仓库失败",
                                             pull_result.failed_count.to_string().red());
                                     }
 
                                     if *diff_after && !pull_result.pulled_repos.is_empty() {
-                                        println!("     {} New commits after sync:", "📋".cyan());
+                                        println!("     {} 同步后新增提交:", "📋".cyan());
                                         for (name, commits) in &pull_result.pulled_repos {
                                             if !commits.is_empty() {
                                                 println!("        {} {}:", "→".cyan(), name.bold());
@@ -591,7 +590,7 @@ impl WorkflowExecutor {
                             if !self.silent {
                                 println!("  └─ {} {}", "✗".red(), e);
                             }
-                            result.add_error(format!("Pull backup failed: {}", e));
+                            result.add_error(format!("备份 Pull 失败: {}", e));
                         }
                     }
                 }
@@ -603,11 +602,11 @@ impl WorkflowExecutor {
         if !self.silent {
             println!();
             let status = if result.success {
-                format!("{} Completed", "✓".green())
+                format!("{} 已完成", "✓".green())
             } else {
-                format!("{} Completed with errors", "⚠".yellow())
+                format!("{} 已完成但存在错误", "⚠".yellow())
             };
-            let time_info = format!("Duration {:.1}s", duration.as_secs_f32());
+            let time_info = format!("耗时 {:.1} 秒", duration.as_secs_f32());
             println!("┌────────────────────────────────────────────────────────────┐");
             println!("│ {:<38} {:>17} │", status, time_info.dimmed());
             println!("└────────────────────────────────────────────────────────────┘");
@@ -625,7 +624,8 @@ impl WorkflowExecutor {
         timeout: u64,
     ) -> Result<FetchSummary> {
         // Auto-sync: check for and scan new repositories
-        let sync = crate::sync::RepoSync::new(true);
+        let app_config = AppConfig::load()?;
+        let sync = crate::sync::RepoSync::new(app_config.sync.auto_sync);
         let sync_status = sync.ensure_synced(sources, db, !self.silent).await?;
         
         if !self.silent && sync_status.needs_scan() {
@@ -650,7 +650,7 @@ impl WorkflowExecutor {
                 .collect();
         }
         if repos.is_empty() {
-            anyhow::bail!("No repositories found");
+            anyhow::bail!("未找到仓库");
         }
 
         let fetcher = Fetcher::new(jobs, timeout)
@@ -676,7 +676,7 @@ impl WorkflowExecutor {
         let repos = Scanner::scan_all(sources, db, false, crate::utils::DEFAULT_MAX_CONCURRENT_SCAN).await?;
 
         if repos.is_empty() {
-            anyhow::bail!("No Git repositories found");
+            anyhow::bail!("未找到 Git 仓库");
         }
 
         let filtered_repos: Vec<_> = if only_dirty_or_behind {
@@ -710,12 +710,12 @@ impl WorkflowExecutor {
                 let path = save_report_async(report, None, "html".to_string()).await?;
 
                 if let Err(e) = super::types::ensure_reports_dir(&path) {
-                    eprintln!("   Warning: Failed to ensure reports directory: {}", e);
+                    eprintln!("   警告：确保报告目录失败: {}", e);
                 }
 
                 if !self.silent {
                     println!();
-                    println!("{} HTML report: {}", "✓".green(), path.display());
+                    println!("{} HTML 报告: {}", "✓".green(), path.display());
                 }
 
                 if open {
@@ -728,7 +728,7 @@ impl WorkflowExecutor {
                 let path = save_report_async(report, None, "md".to_string()).await?;
                 if !self.silent {
                     println!();
-                    println!("{} Markdown report: {}", "✓".green(), path.display());
+                    println!("{} Markdown 报告: {}", "✓".green(), path.display());
                 }
             }
         }
@@ -740,27 +740,27 @@ impl WorkflowExecutor {
     fn execute_check(&self, condition: &Condition, result: &WorkflowResult) -> Result<(), String> {
         let summary = match &result.repo_summary {
             Some(s) => s,
-            None => return Err("No scan result available for checking".to_string()),
+            None => return Err("没有可用于检查的扫描结果".to_string()),
         };
 
         match condition {
             Condition::HasBehind => {
                 if summary.has_updates > 0 {
-                    Err(format!("{} repositories behind remote", summary.has_updates))
+                    Err(format!("{} 个仓库落后于远程", summary.has_updates))
                 } else {
                     Ok(())
                 }
             }
             Condition::HasDirty => {
                 if summary.dirty > 0 {
-                    Err(format!("{} repositories have local changes", summary.dirty))
+                    Err(format!("{} 个仓库存在本地变更", summary.dirty))
                 } else {
                     Ok(())
                 }
             }
             Condition::HasError => {
                 if summary.unreachable > 0 {
-                    Err(format!("{} repositories remote unreachable", summary.unreachable))
+                    Err(format!("{} 个仓库远程不可达", summary.unreachable))
                 } else {
                     Ok(())
                 }
@@ -769,7 +769,7 @@ impl WorkflowExecutor {
                 if summary.has_updates == 0 && summary.dirty == 0 && summary.unreachable == 0 {
                     Ok(())
                 } else {
-                    Err("Not all repositories synced".to_string())
+                    Err("并非所有仓库都已同步".to_string())
                 }
             }
         }
@@ -796,7 +796,7 @@ impl WorkflowExecutor {
             .filter(|r| source_paths.contains(r.root_path.as_str()))
             .collect();
         if repos.is_empty() {
-            anyhow::bail!("No repositories found");
+            anyhow::bail!("未找到仓库");
         }
 
         let (behind_repos, up_to_date_repos): (Vec<_>, Vec<_>) = repos.into_iter()
@@ -822,9 +822,9 @@ impl WorkflowExecutor {
         if clean_repos.is_empty() {
             if !self.silent {
                 println!();
-                println!("{} All behind repositories have local changes, skipped", "⚠".yellow());
+                println!("{} 所有落后远程的仓库都有本地变更，已跳过", "⚠".yellow());
                 println!();
-                println!("{} Changed repository details:", "📋".cyan());
+                println!("{} 变更仓库详情:", "📋".cyan());
                 println!();
                 
                 // Show tree hierarchy
@@ -837,10 +837,10 @@ impl WorkflowExecutor {
                 }
                 
                 println!();
-                println!("💡 Suggestions:");
-                println!("   ├─ Run 'pull-force' to auto stash → pull → pop");
-                println!("   ├─ Run 'git restore .' to discard all local changes");
-                println!("   └─ Or manually handle then run 'pull-safe'");
+                println!("💡 建议:");
+                println!("   ├─ 运行 'pull-force' 自动 stash → pull → pop");
+                println!("   ├─ 运行 'git restore .' 丢弃所有本地变更");
+                println!("   └─ 或手动处理后再运行 'pull-safe'");
             }
             let mut result = PullSafeResult::new();
             result.dirty_repos = dirty_repos.into_iter()
@@ -854,12 +854,12 @@ impl WorkflowExecutor {
 
         if self.pull_safety_check {
             if !self.silent && !self.dry_run {
-                println!("  ├─ {} Checking Pull safety...", "🔒".blue());
+                println!("  ├─ {} 正在检查 Pull 安全性...", "🔒".blue());
             }
 
             for repo in &clean_repos {
                 if crate::signal_handler::is_shutdown_requested() {
-                    anyhow::bail!("User interrupted, stopping pull operation");
+                    anyhow::bail!("用户中断，停止 Pull 操作");
                 }
 
                 let path = std::path::PathBuf::from(&repo.path);
@@ -872,8 +872,8 @@ impl WorkflowExecutor {
                 ).await {
                     Ok(Ok(Ok(report))) => Ok(report),
                     Ok(Ok(Err(e))) => Err(e),
-                    Ok(Err(_)) => Err(crate::error::GetLatestRepoError::Other(anyhow::anyhow!("Safety check task panicked"))),
-                    Err(_) => Err(crate::error::GetLatestRepoError::Other(anyhow::anyhow!("Safety check timed out (30s)"))),
+                    Ok(Err(_)) => Err(crate::error::GetLatestRepoError::Other(anyhow::anyhow!("安全检查任务 panic"))),
+                    Err(_) => Err(crate::error::GetLatestRepoError::Other(anyhow::anyhow!("安全检查超时（30 秒）"))),
                 };
                 match result {
                     Ok(report) => {
@@ -887,7 +887,7 @@ impl WorkflowExecutor {
                             remote_commits: 0,
                             previous_remote_commits: 0,
                             change_ratio: 0.0,
-                            warning: Some(format!("Safety check failed: {}", e)),
+                            warning: Some(format!("安全检查失败: {}", e)),
                             details: vec![],
                         }));
                     }
@@ -903,7 +903,7 @@ impl WorkflowExecutor {
 
                 if !self.silent {
                     println!("  │");
-                    println!("  ├─ {} Skipping {} risky repositories:", "🚨".red(), unsafe_repos.len());
+                    println!("  ├─ {} 跳过 {} 个高风险仓库:", "🚨".red(), unsafe_repos.len());
                     for (repo, report) in &unsafe_repos {
                         if let Some(ref warning) = report.warning {
                             println!("  │    ⚠ {}: {}", repo.name.red().bold(), warning);
@@ -914,7 +914,7 @@ impl WorkflowExecutor {
 
                     if clean_repos.is_empty() {
                         println!("  │");
-                        println!("  └─ {}", "All behind repositories are risky or dirty, no safe pull possible".yellow());
+                        println!("  └─ {}", "所有落后远程的仓库都有风险或本地变更，无法安全 Pull".yellow());
                         let mut result = PullSafeResult::new();
                         result.dirty_repos = dirty_repos.into_iter()
                             .map(repo_to_dirty_info)
@@ -923,7 +923,7 @@ impl WorkflowExecutor {
                     }
 
                     println!("  │");
-                    println!("  ├─ {} {} safe repositories will continue Pull", "✓".green(), clean_repos.len());
+                    println!("  ├─ {} {} 个安全仓库将继续 Pull", "✓".green(), clean_repos.len());
                 } else if clean_repos.is_empty() {
                     let mut result = PullSafeResult::new();
                     result.dirty_repos = dirty_repos.into_iter()
@@ -938,11 +938,11 @@ impl WorkflowExecutor {
         if self.dry_run {
             if !self.silent {
                 println!();
-                println!("  ┌─ {} Dry-run preview ─────────────────────", "📋".cyan());
+                println!("  ┌─ {} Dry-run 预览 ─────────────────────", "📋".cyan());
 
                 if !dirty_repos.is_empty() {
                     println!("  │");
-                    println!("  │ {} Repositories to skip (have local changes):", "○".dimmed());
+                    println!("  │ {} 将跳过的仓库（存在本地变更）:", "○".dimmed());
                     println!("  │");
                     
                     for (i, repo) in dirty_repos.iter().enumerate() {
@@ -955,8 +955,8 @@ impl WorkflowExecutor {
                         );
                         
                         let meta_connector = if is_last { "  │       " } else { "  │   │   " };
-                        let branch_info = repo.branch.as_deref().unwrap_or("unknown");
-                        println!("{}{} [{}] ({} files)", 
+                        let branch_info = repo.branch.as_deref().unwrap_or("未知");
+                        println!("{}{} [{}]（{} 个文件）", 
                             meta_connector,
                             "🌿".dimmed(),
                             branch_info.dimmed(),
@@ -985,7 +985,7 @@ impl WorkflowExecutor {
                         
                         if repo.file_changes.len() > 2 {
                             let more_connector = if is_last { "  │           └─" } else { "  │           ├─" };
-                            println!("{} ... and {} files", 
+                            println!("{} ... 以及 {} 个文件", 
                                 more_connector,
                                 repo.file_changes.len() - 2
                             );
@@ -995,7 +995,7 @@ impl WorkflowExecutor {
 
                 if !unsafe_repos.is_empty() {
                     println!("  │");
-                    println!("  │ {} Repositories to block (deletion risk detected):", "🚨".red());
+                    println!("  │ {} 将阻止的仓库（检测到删除风险）:", "🚨".red());
                     for (repo, _) in &unsafe_repos {
                         println!("  │   • {}", repo.name.red());
                     }
@@ -1003,9 +1003,9 @@ impl WorkflowExecutor {
 
                 if !clean_repos.is_empty() {
                     println!("  │");
-                    println!("  │ {} Repositories to update (safe):", "▶".green());
+                    println!("  │ {} 将更新的仓库（安全）:", "▶".green());
                     for repo in &clean_repos {
-                        println!("  │   • {} (behind {})",
+                        println!("  │   • {}（落后 {} 个提交）",
                             repo.name.green(),
                             repo.behind_count.to_string().yellow()
                         );
@@ -1013,7 +1013,7 @@ impl WorkflowExecutor {
                 }
 
                 println!("  │");
-                println!("  └─ {} Preview complete, no actions were actually executed", "ℹ".blue());
+                println!("  └─ {} 预览完成，未实际执行任何操作", "ℹ".blue());
             }
 
             let mut result = PullSafeResult::new();
@@ -1027,13 +1027,13 @@ impl WorkflowExecutor {
         // Confirmation prompt
         if confirm && !self.silent && !clean_repos.is_empty() {
             println!();
-            println!("{} Will update the following {} clean repositories:", "▶".cyan(), clean_repos.len());
+            println!("{} 将更新以下 {} 个干净仓库:", "▶".cyan(), clean_repos.len());
             for repo in &clean_repos {
-                println!("   - {} (behind {})", repo.name, repo.behind_count);
+                println!("   - {}（落后 {} 个提交）", repo.name, repo.behind_count);
             }
             if !dirty_repos.is_empty() {
                 println!();
-                println!("{} The following {} repositories have local changes and will be skipped:", "!".yellow(), dirty_repos.len());
+                println!("{} 以下 {} 个仓库存在本地变更，将被跳过:", "!".yellow(), dirty_repos.len());
                 println!();
                 
                 for (i, repo_info) in dirty_repos.iter().enumerate() {
@@ -1046,8 +1046,8 @@ impl WorkflowExecutor {
                     );
                     
                     let meta_connector = if is_last { "      " } else { "   │  " };
-                    let branch_info = repo_info.branch.as_deref().unwrap_or("unknown");
-                    println!("{} {} [{}] ({} files)", 
+                    let branch_info = repo_info.branch.as_deref().unwrap_or("未知");
+                    println!("{} {} [{}]（{} 个文件）", 
                         meta_connector,
                         "🌿".dimmed(),
                         branch_info,
@@ -1071,13 +1071,13 @@ impl WorkflowExecutor {
                             file_connector,
                             status_icon,
                             change.path,
-                            if change.staged { "(staged)".green() } else { "(unstaged)".dimmed() }
+                            if change.staged { "（已暂存）".green() } else { "（未暂存）".dimmed() }
                         );
                     }
                     
                     if repo_info.file_changes.len() > 3 {
                         let more_connector = if is_last { "       └─" } else { "       ├─" };
-                        println!("{} ... and {} files", more_connector, repo_info.file_changes.len() - 3);
+                        println!("{} ... 以及 {} 个文件", more_connector, repo_info.file_changes.len() - 3);
                     }
                     
                     if !is_last {
@@ -1087,10 +1087,10 @@ impl WorkflowExecutor {
             }
             use std::io::IsTerminal;
             if !std::io::stdin().is_terminal() {
-                anyhow::bail!("stdin is not a TTY, use --yes to skip confirmation");
+                anyhow::bail!("stdin 不是 TTY，请使用 --yes 跳过确认");
             }
 
-            print!("\nConfirm execution? [Y/n] ");
+            print!("\n确认执行？[Y/n] ");
             use std::io::Write;
             std::io::stdout().flush()?;
 
@@ -1098,7 +1098,7 @@ impl WorkflowExecutor {
             std::io::stdin().read_line(&mut input)?;
 
             if !input.trim().is_empty() && !input.trim().eq_ignore_ascii_case("y") {
-                anyhow::bail!("User cancelled");
+                anyhow::bail!("用户已取消");
             }
         }
 
@@ -1172,11 +1172,11 @@ impl WorkflowExecutor {
                             fresh.last_pull_at = Some(chrono::Local::now());
                             latest_time = fresh.last_commit_at;
                             if let Err(e) = db.upsert_repository(&mut fresh) {
-                                eprintln!("   ⚠️ Update repository status failed '{}': {}", crate::utils::sanitize_path(&path), e);
+                                eprintln!("   ⚠️ 更新仓库状态失败 '{}': {}", crate::utils::sanitize_path(&path), e);
                             } else {
                                 // Only update pull time after upsert succeeds
                                 if let Err(e) = db.update_pull_time(&path) {
-                                    eprintln!("   ⚠️ Update pull time failed '{}': {}", crate::utils::sanitize_path(&path), e);
+                                    eprintln!("   ⚠️ 更新 pull 时间失败 '{}': {}", crate::utils::sanitize_path(&path), e);
                                 }
                             }
                         }
@@ -1187,16 +1187,16 @@ impl WorkflowExecutor {
                 Some((name, _, Err(e))) => {
                     pull_result.failed_count += 1;
                     if !self.silent {
-                        eprintln!("   {} {} pull failed: {}", "✗".red(), name, e);
+                        eprintln!("   {} {} pull 失败: {}", "✗".red(), name, e);
                     }
                 }
                 None => {
                     pull_result.failed_count += 1;
                     if !self.silent {
                         if crate::signal_handler::is_shutdown_requested() {
-                            eprintln!("   {} pull task interrupted by signal", "⚠️".yellow());
+                            eprintln!("   {} pull 任务被中断信号停止", "⚠️".yellow());
                         } else {
-                            eprintln!("   {} pull task panicked", "✗".red());
+                            eprintln!("   {} pull 任务 panic", "✗".red());
                         }
                     }
                 }
@@ -1262,7 +1262,7 @@ impl WorkflowExecutor {
             .filter(|r| source_paths.contains(r.root_path.as_str()))
             .collect();
         if repos.is_empty() {
-            anyhow::bail!("No repositories found");
+            anyhow::bail!("未找到仓库");
         }
 
         let behind_repos: Vec<_> = repos.into_iter()
@@ -1332,10 +1332,10 @@ impl WorkflowExecutor {
                             fresh.last_pull_at = Some(chrono::Local::now());
                             latest_time = fresh.last_commit_at;
                             if let Err(e) = db.upsert_repository(&mut fresh) {
-                                eprintln!("   ⚠️ Update repository status failed '{}': {}", crate::utils::sanitize_path(&path), e);
+                                eprintln!("   ⚠️ 更新仓库状态失败 '{}': {}", crate::utils::sanitize_path(&path), e);
                             } else {
                                 if let Err(e) = db.update_pull_time(&path) {
-                                    eprintln!("   ⚠️ Update pull time failed '{}': {}", crate::utils::sanitize_path(&path), e);
+                                    eprintln!("   ⚠️ 更新 pull 时间失败 '{}': {}", crate::utils::sanitize_path(&path), e);
                                 }
                             }
                         }
@@ -1359,16 +1359,16 @@ impl WorkflowExecutor {
                 Some((name, _, Err(e))) => {
                     pull_result.failed_count += 1;
                     if !self.silent {
-                        eprintln!("   {} {} backup failed: {}", "✗".red(), name, e);
+                        eprintln!("   {} {} 备份 Pull 失败: {}", "✗".red(), name, e);
                     }
                 }
                 None => {
                     pull_result.failed_count += 1;
                     if !self.silent {
                         if crate::signal_handler::is_shutdown_requested() {
-                            eprintln!("   {} backup task interrupted by signal", "⚠️".yellow());
+                            eprintln!("   {} 备份 Pull 任务被中断信号停止", "⚠️".yellow());
                         } else {
-                            eprintln!("   {} backup task panicked", "✗".red());
+                            eprintln!("   {} 备份 Pull 任务 panic", "✗".red());
                         }
                     }
                 }
@@ -1390,7 +1390,7 @@ impl WorkflowExecutor {
                     fresh.last_fetch_at = old_repo.last_fetch_at;
                     fresh.last_pull_at = Some(chrono::Local::now());
                     if let Err(e) = db.upsert_repository(&mut fresh) {
-                        eprintln!("   Warning: Failed to update conflict repository status: {}", e);
+                        eprintln!("   警告：更新冲突仓库状态失败: {}", e);
                     }
                 }
             }
@@ -1455,7 +1455,7 @@ impl WorkflowExecutor {
             .filter(|r| source_paths.contains(r.root_path.as_str()))
             .collect();
         if repos.is_empty() {
-            anyhow::bail!("No repositories found");
+            anyhow::bail!("未找到仓库");
         }
 
         let behind_repos: Vec<_> = repos.into_iter()
@@ -1524,14 +1524,14 @@ impl WorkflowExecutor {
                 }
                 Some((name, _, Err(e))) => {
                     pull_result.failed_count += 1;
-                    eprintln!("   {} {} pull failed: {}", "✗".red(), name, e);
+                    eprintln!("   {} {} pull 失败: {}", "✗".red(), name, e);
                 }
                 None => {
                     pull_result.failed_count += 1;
                     if crate::signal_handler::is_shutdown_requested() {
-                        eprintln!("   {} pull task interrupted by signal", "⚠️".yellow());
+                        eprintln!("   {} pull 任务被中断信号停止", "⚠️".yellow());
                     } else {
-                        eprintln!("   {} pull task panicked", "✗".red());
+                        eprintln!("   {} pull 任务 panic", "✗".red());
                     }
                 }
             }
@@ -1552,11 +1552,11 @@ impl WorkflowExecutor {
                     fresh.last_fetch_at = old_repo.last_fetch_at;
                     fresh.last_pull_at = Some(chrono::Local::now());
                     if let Err(e) = db.upsert_repository(&mut fresh) {
-                        eprintln!("   Warning: Failed to update repository after pull: {}", e);
+                        eprintln!("   警告：Pull 后更新仓库失败: {}", e);
                     } else {
                         // Only update pull time after upsert succeeds
                         if let Err(e) = db.update_pull_time(path) {
-                            eprintln!("   ⚠️ Update pull time failed '{}': {}", crate::utils::sanitize_path(path), e);
+                            eprintln!("   ⚠️ 更新 pull 时间失败 '{}': {}", crate::utils::sanitize_path(path), e);
                         }
                     }
                 }
@@ -1578,7 +1578,7 @@ impl WorkflowExecutor {
                     fresh.last_fetch_at = old_repo.last_fetch_at;
                     fresh.last_pull_at = Some(chrono::Local::now());
                     if let Err(e) = db.upsert_repository(&mut fresh) {
-                        eprintln!("   Warning: Failed to update conflict repository status: {}", e);
+                        eprintln!("   警告：更新冲突仓库状态失败: {}", e);
                     }
                 }
             }
@@ -1626,7 +1626,7 @@ impl WorkflowExecutor {
 
     /// Print dry-run plan
     fn print_dry_run(&self) {
-        println!("{}", "[Dry Run] Execution plan:".yellow().bold());
+        println!("{}", "[Dry Run] 执行计划:".yellow().bold());
         println!();
 
         for (idx, step) in self.workflow.steps.iter().enumerate() {
@@ -1636,58 +1636,62 @@ impl WorkflowExecutor {
                     let jobs = jobs.unwrap_or(self.jobs);
                     let timeout = timeout.unwrap_or(self.timeout);
                     println!("  [{}] Fetch", step_num);
-                    println!("      Concurrency: {} | Timeout: {}s", jobs, timeout);
+                    println!("      并发: {} | 超时: {} 秒", jobs, timeout);
                 }
                 WorkflowStep::Scan { output, open, only_dirty_or_behind } => {
                     let output_name = match output {
-                        OutputFormat::Terminal => "Terminal",
+                        OutputFormat::Terminal => "终端",
                         OutputFormat::Html => "HTML",
                         OutputFormat::Markdown => "Markdown",
                     };
                     println!("  [{}] Scan ({})", step_num, output_name);
-                    println!("      Auto-open: {} | Show only attention-needed: {}", open, only_dirty_or_behind);
+                    println!("      自动打开: {} | 只显示需关注仓库: {}", yes_no(*open), yes_no(*only_dirty_or_behind));
                 }
                 WorkflowStep::Check { condition, .. } => {
                     let cond_name = match condition {
-                        Condition::HasBehind => "Has behind repositories",
-                        Condition::HasDirty => "have local changes",
-                        Condition::HasError => "Has errors",
-                        Condition::AllSynced => "All synced",
+                        Condition::HasBehind => "存在落后远程的仓库",
+                        Condition::HasDirty => "存在本地变更",
+                        Condition::HasError => "存在错误",
+                        Condition::AllSynced => "全部已同步",
                     };
                     println!("  [{}] Check ({})", step_num, cond_name);
                 }
                 WorkflowStep::PullSafe { jobs, confirm, diff_after } => {
                     let jobs = jobs.unwrap_or(self.jobs);
                     println!("  [{}] PullSafe", step_num);
-                    println!("      Strategy: only pull clean repositories (ff-only)");
-                    println!("      Dirty repos: skip and prompt");
-                    println!("      Confirmation prompt: {}", if *confirm { "Yes" } else { "No" });
-                    println!("      Show diff: {}", if *diff_after { "Yes" } else { "No" });
-                    println!("      Concurrency: {}", jobs);
+                    println!("      策略: 只 Pull 干净仓库（ff-only）");
+                    println!("      有本地变更的仓库: 跳过并提示");
+                    println!("      确认提示: {}", yes_no(*confirm));
+                    println!("      显示差异: {}", yes_no(*diff_after));
+                    println!("      并发: {}", jobs);
                 }
                 WorkflowStep::PullForce { jobs, diff_after } => {
                     let jobs = jobs.unwrap_or(self.jobs);
                     println!("  [{}] PullForce", step_num);
-                    println!("      Flow: stash → pull --ff-only → stash pop");
-                    println!("      Show diff: {}", if *diff_after { "Yes" } else { "No" });
-                    println!("      Concurrency: {}", jobs);
-                    println!("      Conflict handling: stop and prompt manual resolution");
+                    println!("      流程: stash → pull --ff-only → stash pop");
+                    println!("      显示差异: {}", yes_no(*diff_after));
+                    println!("      并发: {}", jobs);
+                    println!("      冲突处理: 停止并提示手动解决");
                 }
                 WorkflowStep::PullBackup { jobs, diff_after } => {
                     let jobs = jobs.unwrap_or(self.jobs);
                     println!("  [{}] PullBackup", step_num);
-                    println!("      Flow: stash (if dirty) → git reset --hard origin/<branch> → stash pop");
-                    println!("      Strategy: mirrors remote exactly, handles force-push / rebase");
-                    println!("      Show diff: {}", if *diff_after { "Yes" } else { "No" });
-                    println!("      Concurrency: {}", jobs);
-                    println!("      Conflict handling: stop and prompt manual resolution");
+                    println!("      流程: stash（如有本地变更）→ git reset --hard origin/<branch> → stash pop");
+                    println!("      策略: 严格镜像远程，可处理 force-push / rebase");
+                    println!("      显示差异: {}", yes_no(*diff_after));
+                    println!("      并发: {}", jobs);
+                    println!("      冲突处理: 停止并提示手动解决");
                 }
             }
             println!();
         }
 
-        println!("{}", "Parameter overrides:".dimmed());
-        println!("  Concurrency: {} (default: {})", self.jobs, self.workflow.default_jobs);
-        println!("  Timeout: {}s (default: {}s)", self.timeout, self.workflow.default_timeout);
+        println!("{}", "参数覆盖:".dimmed());
+        println!("  并发: {}（默认: {}）", self.jobs, self.workflow.default_jobs);
+        println!("  超时: {} 秒（默认: {} 秒）", self.timeout, self.workflow.default_timeout);
     }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "是" } else { "否" }
 }

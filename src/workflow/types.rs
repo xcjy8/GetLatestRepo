@@ -76,7 +76,7 @@ impl BuiltInWorkflows {
     fn daily() -> Workflow {
         Workflow {
             name: "daily".to_string(),
-            description: "Daily check: fetch all repositories and generate terminal report".to_string(),
+            description: "日常检查：fetch 所有仓库并生成终端报告".to_string(),
             steps: vec![
                 WorkflowStep::Fetch {
                     jobs: Some(5),
@@ -97,7 +97,7 @@ impl BuiltInWorkflows {
     fn check() -> Workflow {
         Workflow {
             name: "check".to_string(),
-            description: "Quick view: no fetch, only show repositories needing attention".to_string(),
+            description: "快速查看：不执行 fetch，只显示需要关注的仓库".to_string(),
             steps: vec![WorkflowStep::Scan {
                 output: OutputFormat::Terminal,
                 open: false,
@@ -112,7 +112,7 @@ impl BuiltInWorkflows {
     fn report() -> Workflow {
         Workflow {
             name: "report".to_string(),
-            description: "Generate full HTML report and open browser".to_string(),
+            description: "生成完整 HTML 报告并打开浏览器".to_string(),
             steps: vec![
                 WorkflowStep::Fetch {
                     jobs: Some(10),
@@ -133,7 +133,7 @@ impl BuiltInWorkflows {
     fn ci() -> Workflow {
         Workflow {
             name: "ci".to_string(),
-            description: "CI check: return error code if there are behind repositories".to_string(),
+            description: "CI 检查：存在落后远程的仓库时返回错误码".to_string(),
             steps: vec![
                 WorkflowStep::Fetch {
                     jobs: Some(10),
@@ -158,7 +158,7 @@ impl BuiltInWorkflows {
     fn pull_safe() -> Workflow {
         Workflow {
             name: "pull-safe".to_string(),
-            description: "Safe update: fetch → scan → pull clean repositories (dirty repos auto-skipped)".to_string(),
+            description: "安全更新：fetch → scan → pull 干净仓库（自动跳过有本地变更的仓库）".to_string(),
             steps: vec![
                 WorkflowStep::Fetch {
                     jobs: Some(5),
@@ -184,7 +184,7 @@ impl BuiltInWorkflows {
     fn pull_force() -> Workflow {
         Workflow {
             name: "pull-force".to_string(),
-            description: "Force update: fetch → scan → stash → pull → pop (stop on conflict)".to_string(),
+            description: "强制更新：fetch → scan → stash → pull → pop（遇到冲突停止）".to_string(),
             steps: vec![
                 WorkflowStep::Fetch {
                     jobs: Some(5),
@@ -209,7 +209,7 @@ impl BuiltInWorkflows {
     fn pull_backup() -> Workflow {
         Workflow {
             name: "pull-backup".to_string(),
-            description: "Backup mode: fetch → scan → hard reset all repos to match remote exactly (auto-stash local changes, handles force-push)".to_string(),
+            description: "备份模式：fetch → scan → hard reset，使所有仓库严格匹配远程（自动 stash 本地变更，可处理 force-push）".to_string(),
             steps: vec![
                 WorkflowStep::Fetch {
                     jobs: Some(5),
@@ -272,11 +272,11 @@ impl DirtyRepoInfo {
         let unstaged = self.file_changes.len() - staged;
         
         if staged > 0 && unstaged > 0 {
-            format!("{} staged, {} unstaged", staged, unstaged)
+            format!("{} 个已暂存，{} 个未暂存", staged, unstaged)
         } else if staged > 0 {
-            format!("{} staged", staged)
+            format!("{} 个已暂存", staged)
         } else {
-            format!("{} unstaged", unstaged)
+            format!("{} 个未暂存", unstaged)
         }
     }
 }
@@ -406,18 +406,18 @@ impl WorkflowResult {
 
 /// List all workflows
 pub fn list_workflows() {
-    println!("{} Available workflows:\n", "ℹ".blue());
+    println!("{} 可用工作流:\n", "ℹ".blue());
 
     for workflow in BuiltInWorkflows::all() {
         println!("  {} {}", workflow.name.cyan().bold(), workflow.description.dimmed());
-        println!("     Steps: {} | Default concurrency: {} | Timeout: {}s\n",
+        println!("     步骤: {} | 默认并发: {} | 超时: {} 秒\n",
             workflow.steps.len(),
             workflow.default_jobs,
             workflow.default_timeout
         );
     }
 
-    println!("Usage: getlatestrepo workflow <name>");
+    println!("用法: getlatestrepo workflow <name>");
     println!("      getlatestrepo workflow daily");
     println!("      getlatestrepo workflow report --jobs 10");
 }
@@ -466,7 +466,7 @@ pub fn ensure_reports_dir(path: &std::path::Path) -> anyhow::Result<()> {
 
     if let Err(e) = std::fs::remove_file(&latest_link)
         && e.kind() != std::io::ErrorKind::NotFound {
-            eprintln!("   Warning: Failed to delete old symlink: {}", e);
+            eprintln!("   警告：删除旧符号链接失败: {}", e);
         }
 
     let path_str = path.to_string_lossy();
@@ -475,15 +475,15 @@ pub fn ensure_reports_dir(path: &std::path::Path) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         if let Err(e) = std::os::unix::fs::symlink(&relative_path, &latest_link) {
-            eprintln!("   Warning: Failed to create latest.html symlink: {}", e);
-            eprintln!("   Tip: you can manually create symlink: ln -s {} {}", relative_path, latest_link.display());
+            eprintln!("   警告：创建 latest.html 符号链接失败: {}", e);
+            eprintln!("   提示：可手动创建符号链接: ln -s {} {}", relative_path, latest_link.display());
         }
     }
     #[cfg(windows)]
     {
         if let Err(e) = std::os::windows::fs::symlink_file(&relative_path, &latest_link) {
-            eprintln!("   Warning: Failed to create latest.html symlink: {}", e);
-            eprintln!("   Tip: Windows requires admin privileges or developer mode to create symlinks");
+            eprintln!("   警告：创建 latest.html 符号链接失败: {}", e);
+            eprintln!("   提示：Windows 创建符号链接需要管理员权限或开发者模式");
         }
     }
 

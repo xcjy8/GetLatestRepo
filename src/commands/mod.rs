@@ -39,7 +39,7 @@ pub fn print_error(message: &str) {
 pub fn ensure_initialized() -> Result<(crate::config::AppConfig, crate::db::Database)> {
     let config = crate::config::AppConfig::load()?;
     if !config.is_initialized() {
-        anyhow::bail!("Not initialized. Please run: getlatestrepo init <path>");
+        anyhow::bail!("尚未初始化，请先运行: getlatestrepo init <path>");
     }
     let db = crate::db::Database::open()?;
     Ok((config, db))

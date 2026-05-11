@@ -40,7 +40,7 @@ impl Drop for ProcessLock {
             if let Ok(pid) = content.trim().parse::<u32>() {
                 if pid == std::process::id() {
                     if let Err(e) = std::fs::remove_file(&self.pid_path) {
-                        eprintln!("Warning: unable to clean up PID file '{}': {}", self.pid_path.display(), e);
+                        eprintln!("警告：无法清理 PID 文件 '{}': {}", self.pid_path.display(), e);
                     }
                 }
             }
@@ -60,7 +60,7 @@ fn acquire_process_lock() -> Result<ProcessLock> {
         use libc::{flock, LOCK_EX, LOCK_NB};
         
         let file = File::create(&lock_path)
-            .with_context(|| format!("Unable to create lock file: {:?}", lock_path))?;
+            .with_context(|| format!("无法创建锁文件: {:?}", lock_path))?;
         
         let fd = file.as_raw_fd();
         // SAFETY: `fd` is a valid file descriptor obtained from `File::create` above.
@@ -71,7 +71,7 @@ fn acquire_process_lock() -> Result<ProcessLock> {
         let result = unsafe { flock(fd, LOCK_EX | LOCK_NB) };
         
         if result != 0 {
-            anyhow::bail!("Another getlatestrepo instance is already running, cannot execute concurrently");
+            anyhow::bail!("另一个 getlatestrepo 实例正在运行，无法并发执行");
         }
         
         Ok(ProcessLock { _file: file })
@@ -100,7 +100,7 @@ fn acquire_process_lock() -> Result<ProcessLock> {
                     if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
                         if let Ok(pid) = pid_str.trim().parse::<u32>() {
                             if is_process_running(pid) {
-                                anyhow::bail!("Another getlatestrepo instance is running (PID: {})", pid);
+                                anyhow::bail!("另一个 getlatestrepo 实例正在运行（PID: {}）", pid);
                             }
                         }
                     }
@@ -122,16 +122,16 @@ fn acquire_process_lock() -> Result<ProcessLock> {
                             std::thread::sleep(std::time::Duration::from_millis(100));
                         }
                         Err(e) => {
-                            anyhow::bail!("Unable to acquire lock after removing stale PID file: {}", e);
+                            anyhow::bail!("删除过期 PID 文件后仍无法获取锁: {}", e);
                         }
                     }
                 }
                 if !acquired {
-                    anyhow::bail!("Unable to acquire lock: stale PID file could not be replaced after multiple retries");
+                    anyhow::bail!("无法获取锁：多次重试后仍无法替换过期 PID 文件");
                 }
             }
             Err(e) => {
-                anyhow::bail!("Unable to create PID file: {}", e);
+                anyhow::bail!("无法创建 PID 文件: {}", e);
             }
         }
 
@@ -184,7 +184,7 @@ async fn main() -> Result<std::process::ExitCode> {
     // 启动自检：修复路径不一致的记录，清理过期的临时文件
     if !matches!(cli.command, Commands::Init { .. })
         && let Err(e) = run_startup_cleanup() {
-            eprintln!("⚠️  Startup self-check failed: {e}");
+            eprintln!("⚠️  启动自检失败: {e}");
         }
 
     // Build proxy config
@@ -250,7 +250,7 @@ async fn main() -> Result<std::process::ExitCode> {
 
     // 若收到关闭请求，立即退出，不等待 tokio runtime 清理后台线程
     if signal_handler::is_shutdown_requested() {
-        eprintln!("⚠️  Process exited early due to interrupt signal");
+        eprintln!("⚠️  因中断信号提前退出");
         std::process::exit(0);
     }
 
@@ -295,7 +295,7 @@ fn run_startup_cleanup() -> Result<usize> {
     }
 
     if fixes > 0 {
-        eprintln!("ℹ️  Startup self-check complete, fixed {fixes} records");
+        eprintln!("ℹ️  启动自检完成，已修复 {fixes} 条记录");
     }
 
     // 清理 needauth/ 下过期的 swap 临时目录
@@ -310,7 +310,7 @@ fn run_startup_cleanup() -> Result<usize> {
                 let name = entry.file_name().to_string_lossy().to_string();
                 if name.contains(".getlatestrepo_swap") {
                     if let Err(e) = std::fs::remove_dir_all(entry.path()) {
-                        eprintln!("⚠️  Failed to clean temp directory '{}': {e}", entry.path().display());
+                        eprintln!("⚠️  清理临时目录失败 '{}': {e}", entry.path().display());
                     } else {
                         swap_cleaned += 1;
                     }
@@ -319,7 +319,7 @@ fn run_startup_cleanup() -> Result<usize> {
         }
     }
     if swap_cleaned > 0 {
-        eprintln!("🧹 Cleaned {swap_cleaned} residual temp directories");
+        eprintln!("🧹 已清理 {swap_cleaned} 个残留临时目录");
     }
 
     Ok(fixes)
@@ -332,10 +332,10 @@ fn validate_jobs(jobs: usize) -> usize {
     const MIN_JOBS: usize = 1;
     
     if jobs > MAX_JOBS {
-        eprintln!("Warning: concurrency {} exceeds maximum limit {}, adjusted to {}", jobs, MAX_JOBS, MAX_JOBS);
+        eprintln!("警告：并发数 {} 超过最大限制 {}，已调整为 {}", jobs, MAX_JOBS, MAX_JOBS);
         MAX_JOBS
     } else if jobs < MIN_JOBS {
-        eprintln!("Warning: concurrency {} is below minimum limit {}, adjusted to {}", jobs, MIN_JOBS, MIN_JOBS);
+        eprintln!("警告：并发数 {} 低于最小限制 {}，已调整为 {}", jobs, MIN_JOBS, MIN_JOBS);
         MIN_JOBS
     } else {
         jobs

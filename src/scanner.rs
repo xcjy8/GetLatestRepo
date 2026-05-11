@@ -23,7 +23,7 @@ impl Scanner {
         let root = Path::new(&source.root_path);
 
         if !root.exists() {
-            anyhow::bail!("ScanPath does not exist: {}", source.root_path);
+            anyhow::bail!("扫描路径不存在: {}", source.root_path);
         }
 
         // Find all .git directories (blocking IO, run in dedicated thread)
@@ -67,7 +67,7 @@ impl Scanner {
                     
                     if let Some(ref bar) = pb
                         && let Ok(bar) = bar.lock() {
-                            bar.set_message(format!("Scan {}", repo_name));
+                            bar.set_message(format!("扫描 {}", repo_name));
                         }
 
                     let result = GitOps::inspect(&repo_path, &root_path);
@@ -92,13 +92,13 @@ impl Scanner {
             match result {
                 Some(Ok(repo)) => repos.push(repo),
                 Some(Err(e)) => errors.push(e),
-                None => errors.push("Scan task panicked".to_string()),
+                None => errors.push("扫描任务 panic".to_string()),
             }
         }
 
         if let Some(ref bar) = pb
             && let Ok(bar) = bar.lock() {
-                bar.finish_with_message("Scan complete");
+                bar.finish_with_message("扫描完成");
             }
 
         // Display errors
@@ -109,7 +109,7 @@ impl Scanner {
         // Batch write to the database serially to ensure SQLite consistency
         for repo in &mut repos {
             if let Err(e) = db.upsert_repository(repo) {
-                eprintln!("Warning: failed to save repository '{}': {}", crate::utils::sanitize_path(&repo.path), e);
+                eprintln!("警告：保存仓库失败 '{}': {}", crate::utils::sanitize_path(&repo.path), e);
             }
         }
 
@@ -152,9 +152,9 @@ impl Scanner {
                 Err(e) => {
                     // Log WalkDir errors but don't interrupt the scan
                     if let Some(path) = e.path() {
-                        eprintln!("   Warning: Unable to access path '{}': {}", path.display(), e);
+                        eprintln!("   警告：无法访问路径 '{}': {}", path.display(), e);
                     } else {
-                        eprintln!("   Warning: Scan error: {}", e);
+                        eprintln!("   警告：扫描错误: {}", e);
                     }
                 }
             }
@@ -215,7 +215,7 @@ impl Scanner {
                 && !std::path::Path::new(&repo.path).exists()
             {
                 if let Err(e) = db.delete_repository(&repo.path) {
-                    eprintln!("Warning: failed to delete orphan needauth record '{}': {}", repo.name, e);
+                    eprintln!("警告：删除 needauth 孤儿记录失败 '{}': {}", repo.name, e);
                 }
                 continue;
             }
@@ -229,7 +229,7 @@ impl Scanner {
                     updated.path = needauth_path.to_string_lossy().to_string();
                     updated.root_path = std::path::Path::new(root_path).join(crate::utils::NEEDAUTH_DIR).to_string_lossy().to_string();
                     if let Err(e) = db.upsert_repository(&mut updated) {
-                        eprintln!("Warning: failed to update moved repo record '{}': {}", updated.name, e);
+                        eprintln!("警告：更新已移动仓库记录失败 '{}': {}", updated.name, e);
                     }
                 } else if let Some(moved_path) = Self::find_moved_repo_in_needauth(root_path, &repo.path) {
                     // 仓库被重命名后移动到 needauth，通过 sidecar 文件定位
@@ -240,7 +240,7 @@ impl Scanner {
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_else(|| updated.name.clone());
                     if let Err(e) = db.upsert_repository(&mut updated) {
-                        eprintln!("Warning: failed to update moved repo record '{}': {}", updated.name, e);
+                        eprintln!("警告：更新已移动仓库记录失败 '{}': {}", updated.name, e);
                     }
                 } else {
                     db.delete_repository(&repo.path)?;
@@ -266,7 +266,7 @@ impl Scanner {
             }
 
             if progress {
-                println!("\n📁 Scan: {}", source.root_path);
+                println!("\n📁 扫描: {}", source.root_path);
             }
 
             match Self::scan_source(source, db, progress, jobs).await {
@@ -274,7 +274,7 @@ impl Scanner {
                     all_repos.append(&mut repos);
                 }
                 Err(e) => {
-                    eprintln!("❌ Scan failed {}: {}", source.root_path, e);
+                    eprintln!("❌ 扫描失败 {}: {}", source.root_path, e);
                 }
             }
         }

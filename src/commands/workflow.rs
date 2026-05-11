@@ -32,9 +32,9 @@ pub async fn execute(
     let name = match name {
         Some(n) => n,
         None => {
-            eprintln!("{} Please specify workflow name", "✗".red());
-            eprintln!("\nRun `getlatestrepo workflow --list` to see available workflows");
-            anyhow::bail!("Workflow name is required");
+            eprintln!("{} 请指定工作流名称", "✗".red());
+            eprintln!("\n运行 `getlatestrepo workflow --list` 查看可用工作流");
+            anyhow::bail!("工作流名称不能为空");
         }
     };
 
@@ -42,9 +42,9 @@ pub async fn execute(
     let workflow = match BuiltInWorkflows::get(&name) {
         Some(w) => w,
         None => {
-            eprintln!("{} Unknown workflow: {}", "✗".red(), name);
-            eprintln!("\nRun `getlatestrepo workflow --list` to see available workflows");
-            anyhow::bail!("Unknown workflow: {}", name);
+            eprintln!("{} 未知工作流: {}", "✗".red(), name);
+            eprintln!("\n运行 `getlatestrepo workflow --list` 查看可用工作流");
+            anyhow::bail!("未知工作流: {}", name);
         }
     };
 

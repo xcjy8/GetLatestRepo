@@ -8,88 +8,88 @@ use thiserror::Error;
 #[allow(dead_code)]
 pub enum GetLatestRepoError {
     // ── I/O / Paths ───────────────────────────────────────────────
-    #[error("Path does not exist: {0}")]
+    #[error("路径不存在: {0}")]
     PathNotFound(String),
 
-    #[error("Invalid path: {0}")]
+    #[error("路径无效: {0}")]
     InvalidPath(String),
 
-    #[error("Repository path does not exist: {0}")]
+    #[error("仓库路径不存在: {0}")]
     RepoPathMissing(String),
 
     // ── Git Operations ────────────────────────────────────────────
-    #[error("Not a valid Git repository: {0}")]
+    #[error("不是有效的 Git 仓库: {0}")]
     NotGitRepo(String),
 
-    #[error("Failed to open repository {path}: {source}")]
+    #[error("无法打开仓库 {path}: {source}")]
     OpenRepo {
         path: String,
         source: git2::Error,
     },
 
-    #[error("Authentication required (401/403): {0}")]
+    #[error("需要认证 (401/403): {0}")]
     AuthRequired(String),
 
-    #[error("Repository not found or made private (404): {0}")]
+    #[error("仓库不存在或已转为私有 (404): {0}")]
     RepoNotFound(String),
 
-    #[error("Network error: {0}")]
+    #[error("网络错误: {0}")]
     Network(String),
 
-    #[error("Currently not on any branch")]
+    #[error("当前不在任何分支上")]
     DetachedHead,
 
-    #[error("Remote branch does not exist, please run fetch first")]
+    #[error("远程分支不存在，请先运行 fetch")]
     RemoteBranchMissing,
 
-    #[error("Remote branch has no target commit")]
+    #[error("远程分支没有目标提交")]
     RemoteBranchNoTarget,
 
-    #[error("Git operation failed: {0}")]
+    #[error("Git 操作失败: {0}")]
     GitOperation(#[from] git2::Error),
 
     // ── Pull safety ───────────────────────────────────────────────
-    #[error("Potential repo deletion detected: {detail}")]
+    #[error("检测到潜在仓库删除风险: {detail}")]
     RepoDeletionRisk { detail: String },
 
-    #[error("Safety check failed: {source}")]
+    #[error("安全检查失败: {source}")]
     SecurityCheckFailed { source: anyhow::Error },
 
-    #[error("Security scan failed, skipped")]
+    #[error("安全扫描失败，已跳过")]
     SecurityScanFailed,
 
-    #[error("User cancelled")]
+    #[error("用户已取消")]
     UserCancelled,
 
     // ── Database ──────────────────────────────────────────────────
-    #[error("Database operation failed: {0}")]
+    #[error("数据库操作失败: {0}")]
     Database(#[from] rusqlite::Error),
 
     // ── Scan ──────────────────────────────────────────────────────
-    #[error("Scan path does not exist: {0}")]
+    #[error("扫描路径不存在: {0}")]
     ScanPathMissing(String),
 
-    #[error("No repositories found")]
+    #[error("未找到仓库")]
     NoRepos,
 
-    #[error("No enabled scan sources")]
+    #[error("没有启用的扫描源")]
     NoSources,
 
     // ── Config ────────────────────────────────────────────────────
-    #[error("Not initialized. Please run: getlatestrepo init <path>")]
+    #[error("尚未初始化，请先运行: getlatestrepo init <path>")]
     NotInitialized,
 
-    #[error("Path already exists: {0}")]
+    #[error("路径已存在: {0}")]
     DuplicatePath(String),
 
-    #[error("No matching scan source found: {0}")]
+    #[error("未找到匹配的扫描源: {0}")]
     SourceNotFound(String),
 
     // ── General IO ────────────────────────────────────────────────
-    #[error("IO error: {0}")]
+    #[error("IO 错误: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("WalkDir error: {0}")]
+    #[error("WalkDir 错误: {0}")]
     WalkDir(#[from] walkdir::Error),
 
     #[error("{0}")]
@@ -114,7 +114,7 @@ impl TryFrom<crate::git::FetchStatus> for GetLatestRepoError {
             FetchStatus::NetworkError { message } => Ok(GetLatestRepoError::Network(message)),
             FetchStatus::OtherError { message } => Ok(GetLatestRepoError::Other(anyhow::anyhow!(message))),
             FetchStatus::Success => Err(anyhow::anyhow!(
-                "Cannot convert FetchStatus::Success to GetLatestRepoError, please check status before converting"
+                "不能将 FetchStatus::Success 转换为 GetLatestRepoError，请在转换前先检查状态"
             )),
         }
     }

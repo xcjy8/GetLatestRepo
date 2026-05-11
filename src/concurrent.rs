@@ -77,7 +77,7 @@ where
                 let result = match result {
                     Ok(r) => Some(r),
                     Err(_) => {
-                        eprintln!("Warning: task {} panicked", index);
+                        eprintln!("警告：任务 {} panic", index);
                         None
                     }
                 };
@@ -89,7 +89,7 @@ where
             }) {
             Ok(handle) => handles.push(handle),
             Err(e) => {
-                eprintln!("Warning: failed to spawn thread for task {}: {}", index, e);
+                eprintln!("警告：为任务 {} 创建线程失败: {}", index, e);
                 // 释放信号量
                 if let Ok(sem) = sem_tx.lock() {
                     let _ = sem.send(());
@@ -112,7 +112,7 @@ where
     while received < total {
         let remaining = overall_deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
-            eprintln!("Warning: concurrent execution exceeded overall deadline (120s), {} tasks unfinished", total - received);
+            eprintln!("警告：并发执行超过整体超时（120 秒），仍有 {} 个任务未完成", total - received);
             break;
         }
         // Use per-recv timeout of 30s (capped by remaining overall time)
@@ -127,7 +127,7 @@ where
                 // Check if all threads have finished
                 let active_handles = handles.iter().filter(|h| !h.is_finished()).count();
                 if active_handles == 0 {
-                    eprintln!("Warning: {} tasks incomplete, may have panicked or failed to send", total - received);
+                    eprintln!("警告：{} 个任务未完成，可能已 panic 或发送结果失败", total - received);
                     break;
                 }
                 // If we still have active handles but overall deadline not yet reached,
@@ -149,7 +149,7 @@ where
         }
     }
     if unfinished > 0 {
-        eprintln!("Warning: {} threads still running after collection, detached", unfinished);
+        eprintln!("警告：收集结果后仍有 {} 个线程在运行，已分离", unfinished);
     }
 
     // Flatten results: Option<Option<T>> -> Option<T>
@@ -164,7 +164,7 @@ where
 {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(result) => Ok(result),
-        Err(_) => Err("task panicked".to_string()),
+        Err(_) => Err("任务 panic".to_string()),
     }
 }
 

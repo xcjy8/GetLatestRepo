@@ -80,12 +80,12 @@ impl AppConfig {
             let path = PathBuf::from(env_dir);
             if !path.exists() {
                 std::fs::create_dir_all(&path)
-                    .with_context(|| format!("Failed to create config directory: {}", path.display()))?;
+                    .with_context(|| format!("无法创建配置目录: {}", path.display()))?;
             }
             return Ok(path);
         }
         let dir = dirs::config_dir()
-            .context("Unable to get config directory")?
+            .context("无法获取配置目录")?
             .join("getlatestrepo");
         Ok(dir)
     }
@@ -100,7 +100,7 @@ impl AppConfig {
         let dir = Self::config_dir()?;
         if !dir.exists() {
             fs::create_dir_all(&dir)
-                .with_context(|| format!("Failed to create config directory: {}", dir.display()))?;
+                .with_context(|| format!("无法创建配置目录: {}", dir.display()))?;
         }
         Ok(())
     }
@@ -113,10 +113,10 @@ impl AppConfig {
         }
 
         let content = fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read config file: {}", path.display()))?;
+            .with_context(|| format!("无法读取配置文件: {}", path.display()))?;
         
         let config: AppConfig = toml::from_str(&content)
-            .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
+            .with_context(|| format!("无法解析配置文件: {}", path.display()))?;
         
         Ok(config)
     }
@@ -129,10 +129,10 @@ impl AppConfig {
         let path = Self::config_path()?;
         
         let content = toml::to_string_pretty(self)
-            .context("Failed to serialize config")?;
+            .context("无法序列化配置")?;
         
         fs::write(&path, content)
-            .with_context(|| format!("Failed to write config file: {}", path.display()))?;
+            .with_context(|| format!("无法写入配置文件: {}", path.display()))?;
         
         // Set permissions to 0600 (owner read/write only)
         #[cfg(unix)]
@@ -140,7 +140,7 @@ impl AppConfig {
             use std::os::unix::fs::PermissionsExt;
             let permissions = fs::Permissions::from_mode(0o600);
             if let Err(e) = fs::set_permissions(&path, permissions) {
-                eprintln!("Warning: Failed to set config file permissions: {}", e);
+                eprintln!("警告：设置配置文件权限失败: {}", e);
             }
         }
         
@@ -151,7 +151,7 @@ impl AppConfig {
     pub fn add_scan_source(&mut self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
         let canonical = path.canonicalize()
-            .with_context(|| format!("Unable to access path: {}", path.display()))?;
+            .with_context(|| format!("无法访问路径: {}", path.display()))?;
         
         let path_str = canonical.to_string_lossy().to_string();
         
@@ -212,4 +212,3 @@ impl AppConfig {
         !self.scan_sources.is_empty()
     }
 }
-

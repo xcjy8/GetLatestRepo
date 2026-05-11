@@ -30,7 +30,7 @@ pub async fn execute(
 
     let (config, db) = ensure_initialized()?;
 
-    println!("{} Starting scan...", "▶".cyan());
+    println!("{} 开始扫描...", "▶".cyan());
 
     // Get scan sources from config
     let mut sources = config.scan_sources.clone();
@@ -41,14 +41,14 @@ pub async fn execute(
         }
     }
     if sources.is_empty() {
-        anyhow::bail!("No enabled scan sources");
+        anyhow::bail!("没有启用的扫描源");
     }
 
     // Scan repositories
     let repos = Scanner::scan_all(&sources, &db, true, jobs).await?;
 
     if repos.is_empty() {
-        println!("{} No Git repositories found", "!".yellow());
+        println!("{} 未找到 Git 仓库", "!".yellow());
         return Ok(());
     }
 
@@ -56,7 +56,7 @@ pub async fn execute(
 
     // Optional: fetch all repositories first
     let repos = if should_fetch {
-        println!("\n{} Starting fetch all repositories...", "▶".cyan());
+        println!("\n{} 开始 fetch 所有仓库...", "▶".cyan());
         let fetcher = Fetcher::new(jobs, 30)
             .with_security_scan(!no_security_check)
             .with_auto_skip_high_risk(auto_skip_high_risk);
@@ -83,14 +83,14 @@ pub async fn execute(
             let report_content = reporter.generate(&repos, &summary)?;
             let extension = reporter.extension();
             let path = save_report_async(report_content, out_path, extension.to_string()).await?;
-            println!("{} HTML report saved: {}", "✓".green(), path.display());
+            println!("{} HTML 报告已保存: {}", "✓".green(), path.display());
         }
         OutputFormat::Markdown => {
             let reporter = MarkdownReporter::new();
             let report_content = reporter.generate(&repos, &summary)?;
             let extension = reporter.extension();
             let path = save_report_async(report_content, out_path, extension.to_string()).await?;
-            println!("{} Markdown report saved: {}", "✓".green(), path.display());
+            println!("{} Markdown 报告已保存: {}", "✓".green(), path.display());
         }
     }
 

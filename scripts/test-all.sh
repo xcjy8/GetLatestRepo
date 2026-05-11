@@ -89,6 +89,7 @@ if [ ! -d /tmp/test-repos/project-a/.git ]; then
 fi
 run_test "status (valid repo)" "$GETLATESTREPO status /tmp/test-repos/project-a"
 run_test "status (invalid path)" "$GETLATESTREPO status /nonexistent && false || true"  # Should fail
+run_test "status --issues" "$GETLATESTREPO status /tmp/test-repos/project-a --issues"
 
 echo ""
 echo "5. workflow command tests (dry-run)"
@@ -100,6 +101,7 @@ run_test "workflow report --dry-run" "$GETLATESTREPO workflow report --dry-run"
 run_test "workflow ci --dry-run" "$GETLATESTREPO workflow ci --dry-run"
 run_test "workflow pull-safe --dry-run" "$GETLATESTREPO workflow pull-safe --dry-run"
 run_test "workflow pull-force --dry-run" "$GETLATESTREPO workflow pull-force --dry-run"
+run_test "workflow pull-backup --dry-run" "$GETLATESTREPO workflow pull-backup --dry-run"
 
 echo ""
 echo "6. workflow command tests (actual execution)"

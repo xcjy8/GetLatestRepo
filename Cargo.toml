@@ -1,7 +1,8 @@
 [package]
 name = "getlatestrepo"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
+rust-version = "1.85"
 description = "A fast and elegant local Git repository manager written in Rust"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/xcjy8/GetLatestRepo"
@@ -14,7 +15,7 @@ categories = ["command-line-utilities", "development-tools"]
 clap = { version = "4.5", features = ["derive"] }
 
 # Git operations
-git2 = "0.19"
+git2 = "0.20"
 
 # Database
 rusqlite = { version = "0.32", features = ["bundled", "chrono"] }
@@ -32,7 +33,7 @@ dirs = "5.0"
 # Terminal output
 comfy-table = "7.1"
 colored = "2.1"
-indicatif = "0.17"  # progress bars
+indicatif = "0.18"  # progress bars
 
 # HTML templates
 askama = "0.12"

@@ -56,13 +56,13 @@ impl SyncStatus {
     /// Get human-readable description
     pub fn description(&self) -> String {
         match self {
-            SyncStatus::InSync { count } => format!("Synced ({} repositories)", count),
+            SyncStatus::InSync { count } => format!("已同步（{} 个仓库）", count),
             SyncStatus::NewReposFound {
                 disk_count,
                 db_count,
                 new_count,
             } => format!(
-                "Found {} new repositories (disk: {}, database: {})",
+                "发现 {} 个新增仓库（磁盘: {}，数据库: {}）",
                 new_count, disk_count, db_count
             ),
             SyncStatus::ReposRemoved {
@@ -70,14 +70,14 @@ impl SyncStatus {
                 db_count,
                 removed_count,
             } => format!(
-                "{} repositories deleted (disk: {}, database: {})",
+                "{} 个仓库已删除（磁盘: {}，数据库: {}）",
                 removed_count, disk_count, db_count
             ),
             SyncStatus::Diverged {
                 disk_count,
                 db_count,
             } => format!(
-                "Repository count mismatch (disk: {}, database: {})",
+                "仓库数量不一致（磁盘: {}，数据库: {}）",
                 disk_count, db_count
             ),
         }
@@ -168,7 +168,7 @@ impl RepoSync {
 
         if status.needs_scan() {
             if progress {
-                println!("📁 {} syncing...", status.description());
+                println!("📁 {}，正在同步...", status.description());
             }
 
             // Execute full scan
@@ -268,7 +268,7 @@ mod tests {
     fn test_sync_status_in_sync() {
         let status = SyncStatus::InSync { count: 10 };
         assert!(!status.needs_scan());
-        assert!(status.description().contains("Synced"));
+        assert!(status.description().contains("已同步"));
     }
 
     #[test]
@@ -279,7 +279,7 @@ mod tests {
             new_count: 2,
         };
         assert!(status.needs_scan());
-        assert!(status.description().contains("Found"));
+        assert!(status.description().contains("发现"));
         assert!(status.description().contains("2"));
     }
 
@@ -291,7 +291,7 @@ mod tests {
             removed_count: 2,
         };
         assert!(status.needs_scan());
-        assert!(status.description().contains("deleted"));
+        assert!(status.description().contains("已删除"));
     }
 
     #[test]
@@ -400,6 +400,12 @@ mod tests {
         };
 
         assert!(status.needs_scan());
-        assert_eq!(status.description(), "Found 5 new repositories (disk: 15, database: 10)");
+        assert_eq!(status.description(), "发现 5 个新增仓库（磁盘: 15，数据库: 10）");
+    }
+
+    #[test]
+    fn test_repo_sync_preserves_auto_sync_setting() {
+        assert!(RepoSync::new(true).auto_sync);
+        assert!(!RepoSync::new(false).auto_sync);
     }
 }

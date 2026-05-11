@@ -24,16 +24,16 @@ pub async fn execute(repo_path: Option<String>, yes: bool) -> Result<()> {
                 .collect();
             
             if dirty_repos.is_empty() {
-                println!("{} No repositories with local changes found", "ℹ".blue());
+                println!("{} 未发现有本地修改的仓库", "ℹ".blue());
                 return Ok(());
             }
             
-            println!("{} Found {} repositories with local changes:", "📋".cyan(), dirty_repos.len());
+            println!("{} 发现 {} 个有本地修改的仓库：", "📋".cyan(), dirty_repos.len());
             println!();
             
             for (i, repo) in dirty_repos.iter().enumerate() {
-                let branch_info = repo.branch.as_deref().unwrap_or("unknown");
-                println!("  [{}] {} [{}] ({} files)", 
+                let branch_info = repo.branch.as_deref().unwrap_or("未知");
+                println!("  [{}] {} [{}]（{} 个文件）", 
                     i + 1,
                     repo.name.bold(),
                     branch_info.dimmed(),
@@ -44,22 +44,22 @@ pub async fn execute(repo_path: Option<String>, yes: bool) -> Result<()> {
                     println!("      - {}", file.dimmed());
                 }
                 if repo.dirty_files.len() > 3 {
-                    println!("      ... and {} files", repo.dirty_files.len() - 3);
+                    println!("      ... 另有 {} 个文件", repo.dirty_files.len() - 3);
                 }
                 println!();
             }
             
-            print!("Please select the repository number to discard changes (1-{}), or enter 0 to cancel: ", dirty_repos.len());
+            print!("请选择要丢弃修改的仓库编号（1-{}），输入 0 取消：", dirty_repos.len());
             std::io::stdout().flush()?;
             
             let mut input = String::new();
             std::io::stdin().read_line(&mut input)?;
             
             let choice: usize = input.trim().parse()
-                .map_err(|_| anyhow::anyhow!("Invalid input"))?;
+                .map_err(|_| anyhow::anyhow!("输入无效"))?;
             
             if choice == 0 || choice > dirty_repos.len() {
-                println!("{} Cancelled", "✓".green());
+                println!("{} 已取消", "✓".green());
                 return Ok(());
             }
             
@@ -70,7 +70,7 @@ pub async fn execute(repo_path: Option<String>, yes: bool) -> Result<()> {
     // Validate path
     let path = std::path::PathBuf::from(&target_path);
     if !path.exists() {
-        anyhow::bail!("Path does not exist: {}", target_path);
+        anyhow::bail!("路径不存在：{}", target_path);
     }
     
     // Get repository info for display
@@ -81,43 +81,43 @@ pub async fn execute(repo_path: Option<String>, yes: bool) -> Result<()> {
     // Confirmation prompt
     if !yes {
         println!();
-        println!("{} Warning: this operation will permanently discard all local changes!", "⚠️".red().bold());
+        println!("{} 警告：此操作会永久丢弃所有本地修改！", "⚠️".red().bold());
         println!();
-        println!("  Repository: {}", repo_name.bold());
-        println!("  path: {}", target_path.dimmed());
+        println!("  仓库：{}", repo_name.bold());
+        println!("  路径：{}", target_path.dimmed());
         println!();
-        println!("  Content to be discarded includes:");
-        println!("    - All working directory changes");
-        println!("    - All staged changes");
-        println!("    - Untracked files");
+        println!("  将丢弃的内容包括：");
+        println!("    - 工作区所有修改");
+        println!("    - 暂存区所有修改");
+        println!("    - 未跟踪文件");
         println!();
-        print!("{} Confirm to discard these changes? [y/N] ", "❓".yellow());
+        print!("{} 确认丢弃这些修改？[y/N] ", "❓".yellow());
         std::io::stdout().flush()?;
         
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
         
         if !input.trim().eq_ignore_ascii_case("y") {
-            println!("{} Cancelled", "✓".green());
+            println!("{} 已取消", "✓".green());
             return Ok(());
         }
     }
     
     // Execute discard operation
     println!();
-    println!("{} Discarding {} local changes...", "🗑️".yellow(), repo_name);
+    println!("{} 正在丢弃 {} 的本地修改...", "🗑️".yellow(), repo_name);
     
     match GitOps::discard_changes(&path, true) {
         Ok(discarded_files) => {
-            println!("{} successfully discarded {} files' changes", "✓".green(), discarded_files.len());
+            println!("{} 已丢弃 {} 个文件的修改", "✓".green(), discarded_files.len());
             
             if !discarded_files.is_empty() {
                 println!();
-                println!("{} Discarded files:", "📄".dimmed());
+                println!("{} 已丢弃文件：", "📄".dimmed());
                 for (i, file) in discarded_files.iter().take(10).enumerate() {
                     println!("  {} {}", "-".dimmed(), file.dimmed());
                     if i == 9 && discarded_files.len() > 10 {
-                        println!("  ... and {} files", discarded_files.len() - 10);
+                        println!("  ... 另有 {} 个文件", discarded_files.len() - 10);
                         break;
                     }
                 }
@@ -129,15 +129,15 @@ pub async fn execute(repo_path: Option<String>, yes: bool) -> Result<()> {
                 repo.dirty_files.clear();
                 repo.file_changes.clear();
                 if let Err(e) = db.upsert_repository(&mut repo) {
-                    eprintln!("{} Update database status failed: {}", "⚠️".yellow(), e);
+                    eprintln!("{} 更新数据库状态失败：{}", "⚠️".yellow(), e);
                 }
             }
             
             println!();
-            println!("{} Now you can run 'getlatestrepo fetch' or 'getlatestrepo pull-safe' ", "💡".cyan());
+            println!("{} 现在可以运行 'getlatestrepo fetch' 或 'getlatestrepo workflow pull-safe'", "💡".cyan());
         }
         Err(e) => {
-            anyhow::bail!("{} Failed to discard changes: {}", "✗".red(), e);
+            anyhow::bail!("{} 丢弃修改失败：{}", "✗".red(), e);
         }
     }
     

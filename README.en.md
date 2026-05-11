@@ -2,7 +2,7 @@
 
 # GetLatestRepo
 
-[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange?logo=rust)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust)](https://www.rust-lang.org)
 [![CI](https://github.com/xcjy8/GetLatestRepo/actions/workflows/ci.yml/badge.svg)](https://github.com/xcjy8/GetLatestRepo/actions)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -73,7 +73,7 @@ sudo cp target/release/getlatestrepo /usr/local/bin/
 
 ### Prerequisites
 
-- Rust 1.70+
+- Rust 1.85+ (uses Rust Edition 2024)
 - Git (installed on your system)
 
 ### Download from Releases
@@ -392,6 +392,8 @@ cargo test
 
 | Version | Highlights |
 |------|----------|
+| v0.1.9 | Dependency security upgrades, auto-sync fix, and release quality hardening |
+| v0.1.8 | pull-backup workflow and bilingual README rewrite |
 | v0.1.7 | Full bug fix and security hardening |
 | v0.1.6 | Rust Edition 2024, dead code cleanup, pre-scan security batch |
 | v0.1.5 | Removed git2 network fetch path, data-verification-based optimization |

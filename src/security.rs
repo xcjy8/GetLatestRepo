@@ -40,20 +40,20 @@ static CODE_EXTENSIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
 static SUSPICIOUS_PATTERNS: LazyLock<Vec<(regex::Regex, &'static str)>> = LazyLock::new(|| {
     // 使用有限量词（如 {0,200}）替代 .* / \s*，显著降低 ReDoS 回溯风险
     let raw: &[(&str, &str)] = &[
-        (r"eval\s{0,20}\(", "eval function call"),
-        (r"exec\s{0,20}\(", "exec function call"),
-        (r"system\s{0,20}\(", "system function call"),
-        (r"os\.system", "os.system call"),
-        (r"subprocess\.call", "subprocess call"),
-        (r"Runtime\.getRuntime\(\)\.exec", "Java Runtime exec"),
-        (r"child_process", "Node.js child_process"),
-        (r"\bbase64\b.{0,200}\bdecode\b", "Base64 decode (may hide malicious code)"),
-        (r"http://[^\s]{0,200}\.onion", "Dark web address"),
-        (r"wget\s+http", "wget download"),
-        (r"curl\s+\S{0,200}\|\S{0,200}sh", "curl pipe to shell"),
-        (r"fetch\([^)]{0,200}\.txt\)[^)]{0,200}eval", "fetch text and eval"),
+        (r"eval\s{0,20}\(", "eval 函数调用"),
+        (r"exec\s{0,20}\(", "exec 函数调用"),
+        (r"system\s{0,20}\(", "system 函数调用"),
+        (r"os\.system", "os.system 调用"),
+        (r"subprocess\.call", "subprocess 调用"),
+        (r"Runtime\.getRuntime\(\)\.exec", "Java Runtime exec 调用"),
+        (r"child_process", "Node.js child_process 调用"),
+        (r"\bbase64\b.{0,200}\bdecode\b", "Base64 解码（可能隐藏恶意代码）"),
+        (r"http://[^\s]{0,200}\.onion", "暗网地址"),
+        (r"wget\s+http", "wget 下载"),
+        (r"curl\s+\S{0,200}\|\S{0,200}sh", "curl 管道执行 shell"),
+        (r"fetch\([^)]{0,200}\.txt\)[^)]{0,200}eval", "fetch 文本后执行 eval"),
         (r"document\.write.{0,200}unescape", "document.write + unescape"),
-        (r"fromCharCode", "String.fromCharCode (possible obfuscation)"),
+        (r"fromCharCode", "String.fromCharCode（可能用于混淆）"),
     ];
     raw.iter()
         .filter_map(|(pat, desc)| {
@@ -93,11 +93,11 @@ impl RiskLevel {
 
     pub fn label(&self) -> &'static str {
         match self {
-            RiskLevel::Safe => "Safe",
-            RiskLevel::Low => "Low risk",
-            RiskLevel::Medium => "Medium risk",
-            RiskLevel::High => "High risk",
-            RiskLevel::Critical => "Critical danger",
+            RiskLevel::Safe => "安全",
+            RiskLevel::Low => "低风险",
+            RiskLevel::Medium => "中风险",
+            RiskLevel::High => "高风险",
+            RiskLevel::Critical => "严重危险",
         }
     }
 
@@ -238,10 +238,10 @@ impl SecurityScanner {
                 level: RiskLevel::High,
                 risk_type: RiskType::FileCountAnomaly,
                 description: format!(
-                    "File count sharply decreased: {} → {} (decreased {:.1}%)",
+                    "文件数量大幅减少: {} → {}（减少 {:.1}%）",
                     local_count, remote_count, -change_ratio * 100.0
                 ),
-                details: vec!["⚠️ Possible remote repository emptying or malicious deletion".to_string()],
+                details: vec!["⚠️ 远程仓库可能被清空或遭到恶意删除".to_string()],
             });
         }
 
@@ -251,10 +251,10 @@ impl SecurityScanner {
                 level: RiskLevel::Medium,
                 risk_type: RiskType::FileCountAnomaly,
                 description: format!(
-                    "File count abnormally increased: {} → {} (increased {:.1}%)",
+                    "文件数量异常增加: {} → {}（增加 {:.1}%）",
                     local_count, remote_count, change_ratio * 100.0
                 ),
-                details: vec!["⚠️ Too many new files on remote, please check for malicious content".to_string()],
+                details: vec!["⚠️ 远程新增文件过多，请检查是否包含恶意内容".to_string()],
             });
         }
 
@@ -334,7 +334,7 @@ impl SecurityScanner {
             return Ok(SecurityRisk {
                 level,
                 risk_type: RiskType::SensitiveFileModified,
-                description: format!("Sensitive config file modified: {} files", modified_sensitive_files.len()),
+                description: format!("敏感配置文件发生变更: {} 个文件", modified_sensitive_files.len()),
                 details: modified_sensitive_files.into_iter().take(5).collect(),
             });
         }
@@ -379,7 +379,7 @@ impl SecurityScanner {
                 if file_size > Self::MAX_FILE_SIZE {
                     oversized_files.push((
                         path_str.to_string(),
-                        format!("Oversized file ({}KB) bypasses pattern scanning", file_size / 1024),
+                        format!("超大文件（{}KB）已跳过模式扫描", file_size / 1024),
                     ));
                     continue;
                 }
@@ -406,7 +406,7 @@ impl SecurityScanner {
             return Ok(SecurityRisk {
                 level: RiskLevel::Critical,
                 risk_type: RiskType::SuspiciousCodePattern,
-                description: format!("Detected {} suspicious code patterns", found_patterns.len()),
+                description: format!("检测到 {} 处可疑代码模式", found_patterns.len()),
                 details,
             });
         }
@@ -421,7 +421,7 @@ impl SecurityScanner {
             return Ok(SecurityRisk {
                 level: RiskLevel::Medium,
                 risk_type: RiskType::SuspiciousCodePattern,
-                description: format!("{} oversized files bypass pattern scanning", oversized_files.len()),
+                description: format!("{} 个超大文件已跳过模式扫描", oversized_files.len()),
                 details,
             });
         }
@@ -483,8 +483,8 @@ impl SecurityScanner {
             let oid = oid?;
             if let Ok(commit) = repo.find_commit(oid) {
                 let committer = commit.committer();
-                let name = committer.name().unwrap_or("unknown").to_string();
-                let email = committer.email().unwrap_or("unknown").to_string();
+                let name = committer.name().unwrap_or("未知").to_string();
+                let email = committer.email().unwrap_or("未知").to_string();
                 let identity = format!("{} <{}>", name, email);
                 *new_committers.entry(identity.clone()).or_insert(0) += 1;
                 
@@ -497,7 +497,7 @@ impl SecurityScanner {
                         &commit_id
                     };
                     unknown_committers.push(format!(
-                        "{} (commit: {})",
+                        "{}（提交: {}）",
                         identity,
                         short_id
                     ));
@@ -509,7 +509,7 @@ impl SecurityScanner {
             return Ok(SecurityRisk {
                 level: RiskLevel::Medium,
                 risk_type: RiskType::CommitterAnomaly,
-                description: format!("Found {} new unknown committers", unknown_committers.len()),
+                description: format!("发现 {} 个新的未知提交者", unknown_committers.len()),
                 details: unknown_committers.into_iter().take(5).collect(),
             });
         }
@@ -536,8 +536,8 @@ impl SecurityScanner {
             let oid = oid?;
             if let Ok(commit) = repo.find_commit(oid) {
                 let committer = commit.committer();
-                let name = committer.name().unwrap_or("unknown").to_string();
-                let email = committer.email().unwrap_or("unknown").to_string();
+                let name = committer.name().unwrap_or("未知").to_string();
+                let email = committer.email().unwrap_or("未知").to_string();
                 committers.insert(format!("{} <{}>", name, email));
             }
         }
@@ -549,11 +549,11 @@ impl SecurityScanner {
 /// Format security scan result for display
 pub fn format_security_report(result: &SecurityScanResult) -> String {
     if result.is_safe {
-        return format!("{} Security scan passed", RiskLevel::Safe.emoji());
+        return format!("{} 安全扫描通过", RiskLevel::Safe.emoji());
     }
 
     let mut report = String::new();
-    report.push_str(&format!("\n{} Security warning\n", "🛡️".yellow().bold()));
+    report.push_str(&format!("\n{} 安全警告\n", "🛡️".yellow().bold()));
     report.push_str(&format!("{}", "═".repeat(50).yellow()));
     report.push('\n');
 
@@ -567,7 +567,7 @@ pub fn format_security_report(result: &SecurityScanResult) -> String {
         report.push_str(&format!("   {}\n", risk.description));
         
         if !risk.details.is_empty() {
-            report.push_str("   Details:\n");
+            report.push_str("   详情:\n");
             for detail in &risk.details {
                 report.push_str(&format!("     • {}\n", detail.dimmed()));
             }
@@ -576,7 +576,7 @@ pub fn format_security_report(result: &SecurityScanResult) -> String {
 
     if result.max_level.should_block() {
         report.push('\n');
-        report.push_str(&format!("{}", "⚠️ High risk detected, recommended to stop operation!\n".red().bold()));
+        report.push_str(&format!("{}", "⚠️ 检测到高风险，建议停止操作！\n".red().bold()));
     }
 
     report
@@ -585,12 +585,12 @@ pub fn format_security_report(result: &SecurityScanResult) -> String {
 impl SecurityRisk {
     fn risk_type_str(&self) -> String {
         match self.risk_type {
-            RiskType::RemoteInaccessible => "Remote inaccessible".to_string(),
-            RiskType::FileCountAnomaly => "File count anomaly".to_string(),
-            RiskType::SensitiveFileModified => "Sensitive file changes".to_string(),
-            RiskType::SuspiciousCodePattern => "Suspicious code pattern".to_string(),
-            RiskType::CommitterAnomaly => "Committer anomaly".to_string(),
-            RiskType::SignatureVerificationFailed => "Signature verification failed".to_string(),
+            RiskType::RemoteInaccessible => "远程不可访问".to_string(),
+            RiskType::FileCountAnomaly => "文件数量异常".to_string(),
+            RiskType::SensitiveFileModified => "敏感文件变更".to_string(),
+            RiskType::SuspiciousCodePattern => "可疑代码模式".to_string(),
+            RiskType::CommitterAnomaly => "提交者异常".to_string(),
+            RiskType::SignatureVerificationFailed => "签名验证失败".to_string(),
         }
     }
 }

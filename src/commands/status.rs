@@ -21,8 +21,8 @@ pub async fn execute(path: PathBuf, show_diff: bool, issues: bool) -> Result<()>
         ).await {
             Ok(Ok(Ok(repos))) => repos,
             Ok(Ok(Err(e))) => return Err(e),
-            Ok(Err(_)) => anyhow::bail!("Database query task panicked"),
-            Err(_) => anyhow::bail!("Database query timed out (30s)"),
+            Ok(Err(_)) => anyhow::bail!("数据库查询任务 panic"),
+            Err(_) => anyhow::bail!("数据库查询超时（30s）"),
         };
         if repos.is_empty() {
             println!("{} 暂无仓库记录，请先执行 scan 命令", "ℹ".blue());
@@ -34,10 +34,10 @@ pub async fn execute(path: PathBuf, show_diff: bool, issues: bool) -> Result<()>
     
     let canonical = path
         .canonicalize()
-        .with_context(|| format!("Unable to access path: {}", path.display()))?;
+        .with_context(|| format!("无法访问路径：{}", path.display()))?;
 
     if !GitOps::is_repository(&canonical) {
-        anyhow::bail!("Not a valid Git repository: {}", canonical.display());
+        anyhow::bail!("不是有效的 Git 仓库：{}", canonical.display());
     }
 
     let repo = match db.get_repository(&canonical.to_string_lossy())? {
@@ -54,7 +54,7 @@ pub async fn execute(path: PathBuf, show_diff: bool, issues: bool) -> Result<()>
     print_repo_detail(&repo);
 
     if show_diff && repo.dirty {
-        println!("\n{} Local changed files:", "📝".yellow());
+        println!("\n{} 本地已修改文件：", "📝".yellow());
         for file in &repo.dirty_files {
             println!("  - {}", file);
         }

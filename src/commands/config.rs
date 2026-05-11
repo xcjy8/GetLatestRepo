@@ -20,19 +20,19 @@ pub async fn execute(command: ConfigCommands) -> Result<()> {
                 db.upsert_scan_source(&mut source_clone)?;
             }
 
-            println!("{} Added scan source: {}", "✓".green(), path.display());
+            println!("{} 已添加扫描源：{}", "✓".green(), path.display());
         }
         ConfigCommands::List => {
             let config = AppConfig::load()?;
 
             if config.scan_sources.is_empty() {
-                println!("{} No scan sources configured", "!".yellow());
+                println!("{} 暂未配置扫描源", "!".yellow());
             } else {
-                println!("{} Configured scan sources:\n", "ℹ".blue());
+                println!("{} 已配置扫描源：\n", "ℹ".blue());
                 for (idx, source) in config.scan_sources.iter().enumerate() {
                     println!("  {}. {}", idx + 1, source.root_path);
                     println!(
-                        "     Depth: {} | Ignore: {:?}",
+                        "     深度: {} | 忽略: {:?}",
                         source.max_depth, source.ignore_patterns
                     );
                 }
@@ -54,18 +54,18 @@ pub async fn execute(command: ConfigCommands) -> Result<()> {
                 path_or_id
             };
             config.remove_scan_source(&canonicalized)?;
-            println!("{} Removed scan source", "✓".green());
+            println!("{} 已移除扫描源", "✓".green());
         }
         ConfigCommands::Ignore { patterns } => {
             let mut config = AppConfig::load()?;
             let pattern_list: Vec<String> =
                 patterns.split(',').map(|s| s.trim().to_string()).collect();
             config.set_ignore_patterns(pattern_list.clone())?;
-            println!("{} Set ignore rules: {:?}", "✓".green(), pattern_list);
+            println!("{} 已设置忽略规则：{:?}", "✓".green(), pattern_list);
         }
         ConfigCommands::Path => {
-            println!("Config file: {}", AppConfig::config_path()?.display());
-            println!("Database: {}", Database::db_path()?.display());
+            println!("配置文件：{}", AppConfig::config_path()?.display());
+            println!("数据库：{}", Database::db_path()?.display());
         }
     }
 

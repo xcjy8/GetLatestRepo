@@ -21,7 +21,7 @@ impl Database {
     pub fn open() -> Result<Self> {
         let path = Self::db_path()?;
         let conn = Connection::open(&path)
-            .with_context(|| format!("Failed to open database: {}", path.display()))?;
+            .with_context(|| format!("无法打开数据库: {}", path.display()))?;
 
         // Enable WAL mode for better concurrency performance
         let _journal_mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
@@ -35,7 +35,7 @@ impl Database {
             use std::fs;
             use std::os::unix::fs::PermissionsExt;
             if let Err(e) = fs::set_permissions(&path, fs::Permissions::from_mode(0o600)) {
-                eprintln!("Warning: failed to set database file permissions: {}", e);
+                eprintln!("警告：设置数据库文件权限失败: {}", e);
             }
         }
 
@@ -358,7 +358,7 @@ impl Database {
     pub fn move_repository(&self, old_path: &str, repo: &mut Repository) -> Result<()> {
         // 防御性检查：确保当前不在事务中，避免嵌套事务导致不可预期行为
         if !self.conn.is_autocommit() {
-            anyhow::bail!("Cannot move repository while already in a transaction");
+            anyhow::bail!("当前已在事务中，无法移动仓库记录");
         }
         // Use immediate_transaction to ensure correct behavior under WAL mode
         // Use new_unchecked because rusqlite requires &mut self for transaction().

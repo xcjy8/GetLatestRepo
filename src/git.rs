@@ -56,16 +56,16 @@ impl FetchStatus {
         match self {
             FetchStatus::Success => None,
             FetchStatus::AuthenticationRequired { message } => {
-                Some(format!("Authentication required (401/403): {}", message))
+                Some(format!("需要认证 (401/403): {}", message))
             }
             FetchStatus::RepositoryNotFound { message } => {
-                Some(format!("Repository not found or made private (404): {}", message))
+                Some(format!("仓库不存在或已转为私有 (404): {}", message))
             }
             FetchStatus::NetworkError { message } => {
-                Some(format!("Network error: {}", message))
+                Some(format!("网络错误: {}", message))
             }
             FetchStatus::OtherError { message } => {
-                Some(format!("Error: {}", message))
+                Some(format!("错误: {}", message))
             }
         }
     }
@@ -402,7 +402,7 @@ impl GitOps {
             Ok(child) => child,
             Err(e) => {
                 return FetchStatus::OtherError {
-                    message: format!("Failed to start git fetch: {e}"),
+                    message: format!("无法启动 git fetch: {e}"),
                 };
             }
         };
@@ -432,7 +432,7 @@ impl GitOps {
                     }
 
                     let exit_code = status.code().unwrap_or(-1);
-                    let error_msg = format!("git fetch failed (exit {exit_code}): {}", stderr.trim());
+                    let error_msg = format!("git fetch 失败（退出码 {exit_code}）: {}", stderr.trim());
                     return Self::classify_error(&error_msg);
                 }
                 Ok(None) => {
@@ -440,14 +440,14 @@ impl GitOps {
                         let _ = child.kill();
                         let _ = child.wait();
                         return FetchStatus::NetworkError {
-                            message: format!("Timeout ({}s)", timeout_secs),
+                            message: format!("超时 ({} 秒)", timeout_secs),
                         };
                     }
                     std::thread::sleep(std::time::Duration::from_millis(50));
                 }
                 Err(e) => {
                     return FetchStatus::OtherError {
-                        message: format!("Failed waiting for git fetch: {e}"),
+                        message: format!("等待 git fetch 结束失败: {e}"),
                     };
                 }
             }
@@ -472,7 +472,7 @@ impl GitOps {
         // Rate limiting (must be checked before auth — GitHub returns 403 for rate limits)
         if msg.contains("rate limit") || msg.contains("too many requests") || msg.contains("429") {
             return FetchStatus::NetworkError {
-                message: format!("Rate limited: {}", error_msg),
+                message: format!("触发速率限制: {}", error_msg),
             };
         }
 
@@ -560,20 +560,20 @@ impl GitOps {
         };
 
         let remote_oid = remote_ref.target()
-            .ok_or_else(|| GetLatestRepoError::Other(anyhow::anyhow!("Unable to get remote branch '{}' OID", remote_branch)))?;
+            .ok_or_else(|| GetLatestRepoError::Other(anyhow::anyhow!("无法获取远程分支 '{}' 的 OID", remote_branch)))?;
 
         // Get local branch reference
         let local_ref_name = format!("refs/heads/{}", branch_name);
         let mut local_ref = repo.find_reference(&local_ref_name)
-            .map_err(|e| GetLatestRepoError::Other(anyhow::anyhow!("Unable to find local branch '{}': {}", branch_name, e)))?;
+            .map_err(|e| GetLatestRepoError::Other(anyhow::anyhow!("无法找到本地分支 '{}': {}", branch_name, e)))?;
 
         // Fast-forward merge
         let remote_obj = repo.find_object(remote_oid, None)
-            .map_err(|e| GetLatestRepoError::Other(anyhow::anyhow!("Unable to find remote commit object: {}", e)))?;
+            .map_err(|e| GetLatestRepoError::Other(anyhow::anyhow!("无法找到远程提交对象: {}", e)))?;
         
         // Save original OID for potential rollback
         let original_oid = local_ref.target()
-            .ok_or_else(|| GetLatestRepoError::Other(anyhow::anyhow!("Unable to get current branch OID")))?;
+            .ok_or_else(|| GetLatestRepoError::Other(anyhow::anyhow!("无法获取当前分支 OID")))?;
 
         // Verify this is actually a fast-forward (local is ancestor of remote)
         let (ahead, behind) = repo.graph_ahead_behind(original_oid, remote_oid)
@@ -811,8 +811,8 @@ impl GitOps {
             Err(e) => {
                 // Pull failed after stash was created — warn user about the orphan stash
                 if stash_created {
-                    eprintln!("   ⚠️ Pull failed, but local changes were saved to stash: {}", stash_name);
-                    eprintln!("      You can restore them manually with: git stash pop stash@{{0}}");
+                    eprintln!("   ⚠️ Pull 失败，但本地变更已保存到 stash: {}", stash_name);
+                    eprintln!("      可用以下命令手动恢复: git stash pop stash@{{0}}");
                 }
                 Err(e)
             }
@@ -829,7 +829,7 @@ impl GitOps {
                 .filter_map(|entry| entry.path().map(|s| s.to_string()))
                 .collect(),
             Err(e) => {
-                eprintln!("Warning: failed to get conflict files: {}", e);
+                eprintln!("警告：获取冲突文件失败: {}", e);
                 Vec::new()
             }
         }
@@ -846,7 +846,7 @@ impl GitOps {
                 true
             }
         }) {
-            eprintln!("Warning: failed to iterate stashes: {}", e);
+            eprintln!("警告：遍历 stash 失败: {}", e);
         }
         result
     }
@@ -1135,7 +1135,7 @@ impl GitOps {
                     remote_commits: 0,
                     previous_remote_commits: 0,
                     change_ratio: 0.0,
-                    warning: Some("Remote branch does not exist, please run fetch first".to_string()),
+                    warning: Some("远程分支不存在，请先运行 fetch".to_string()),
                     details: vec![],
                 });
             }
@@ -1494,11 +1494,9 @@ mod tests {
         };
         let mut refs = Vec::new();
         if let Ok(refs_iter) = repo.references_glob("refs/glr-archive/*") {
-            for r in refs_iter {
-                if let Ok(r) = r {
-                    if let Some(name) = r.name() {
-                        refs.push(name.to_string());
-                    }
+            for r in refs_iter.flatten() {
+                if let Some(name) = r.name() {
+                    refs.push(name.to_string());
                 }
             }
         }
